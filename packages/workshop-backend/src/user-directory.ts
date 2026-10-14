@@ -36,6 +36,11 @@ export class UserDirectoryDurableObject extends DurableObject<Cloudflare.Env> {
       record.id, record.name, `${record.id}\n${record.name}`.toLowerCase(), rev);
   }
 
+  /** Removes one user's record, for an erased account. Idempotent. */
+  removeUser(id: string): void {
+    this.ctx.storage.sql.exec(`DELETE FROM users WHERE id = ?`, id);
+  }
+
   /**
    * Case-insensitive substring search over name and id, excluding every id in `excludeIds`.
    * The id is indexed first so an exact id starts at position one; ties sort by id then name.

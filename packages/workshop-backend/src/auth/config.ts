@@ -12,9 +12,20 @@
  * to be offered. Empty when unset.
  */
 export function getAuthGatekeeperAllowlist(env: Cloudflare.Env): string[] {
+  // Clerk replaces every other sign-in method on a deployment that enables it.
+  if (isClerkEnabled(env)) return [];
   const raw = (env as { AUTH_GATEKEEPERS?: string }).AUTH_GATEKEEPERS;
   if (!raw) return [];
   return raw.split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
+}
+
+/**
+ * Whether Clerk is the deployment's sign-in method: both the issuer (to verify tokens) and the
+ * publishable key (for the browser) are set. Like the rest of the sign-in configuration this is
+ * environment-driven, so an admin session cannot change it.
+ */
+export function isClerkEnabled(env: Cloudflare.Env): boolean {
+  return !!env.CLERK_ISSUER && !!env.CLERK_PUBLISHABLE_KEY;
 }
 
 /** Whether the deployment has opted any gatekeeper into sign-in. */
@@ -28,6 +39,7 @@ export function hasAuthGatekeepers(env: Cloudflare.Env): boolean {
  * auth gatekeeper is allowlisted, otherwise we'd lock everyone out, so password auth stays on.
  */
 export function isPasswordAuthEnabled(env: Cloudflare.Env): boolean {
+  if (isClerkEnabled(env)) return false;
   if (env.DISABLE_PASSWORD_AUTH !== "true") return true;
   return !hasAuthGatekeepers(env);
 }

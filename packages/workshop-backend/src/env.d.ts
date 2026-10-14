@@ -91,6 +91,19 @@ declare global {
       // Minimum connected-account balance (USD) to proceed via BYOK. Defaults to
       // MINIMUM_CLOUDFLARE_BALANCE.
       MINIMUM_CLOUDFLARE_BALANCE?: string;
+
+      // Clerk sign-in (docs/clerk-signin.md). Clerk is enabled iff both CLERK_ISSUER and
+      // CLERK_PUBLISHABLE_KEY are set; everything here is auth configuration, so it is
+      // environment-driven and deliberately not part of AdminConfig.
+      CLERK_ISSUER?: string;              // Clerk Frontend API URL; the session token's `iss`
+      CLERK_PUBLISHABLE_KEY?: string;     // public key handed to the SPA via ServerConfig.clerk
+      CLERK_AUTHORIZED_PARTIES?: string;  // comma-separated allowed `azp` origins (default: PUBLIC_BASE_URL's origin)
+      CLERK_WEBHOOK_SECRET?: string;      // secret: Svix signing secret (whsec_...); unset disables the webhook
+
+      // "single" pins the deployment to the one Clerk organization TENANT_ID; any other value is
+      // the shared multi-tenant pool.
+      TENANT_MODE?: string;
+      TENANT_ID?: string;
     }
   }
 }

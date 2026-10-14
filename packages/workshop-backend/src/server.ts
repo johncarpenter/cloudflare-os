@@ -33,6 +33,11 @@ import { serveSiteLogo, SITE_LOGO_PATH } from "./site-logo.js";
 import { createWorkshopLogger } from "./observability";
 import { retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
 import { deviceSessionCallback } from "./auth/device-session-callback.js";
+import { isClerkEnabled } from "./auth/config.js";
+import { verifyClerkSessionToken, type ClerkClaims } from "./auth/clerk.js";
+import { handleClerkWebhook } from "./auth/clerk-webhook.js";
+import { makeUserKey, personalTenantId, resolveTenant, tenantOfProfileId, userIdOfProfileId, type TenantContext } from "./tenant.js";
+import type { WorkspaceInfo } from "@gadgets/workshop-shared/api";
 
 const logger = createWorkshopLogger("workshop.server");
 
@@ -48,6 +53,30 @@ function publicBlueprintInfo(id: string, metadata: BlueprintPublicInfo['metadata
     metadata,
     screenshotUrl: blueprintScreenshotUrl(id, metadata),
   };
+}
+
+// A Clerk connection is refused, and closed, once this long passes without a renewSession(). The
+// browser renews every 30 seconds, so one missed beat is tolerated and two are not.
+const CLERK_SESSION_GRACE_MS = 75_000;
+
+// Verifies a Clerk session token and resolves its tenant, or throws a coded auth error. Nothing is
+// created for a refused session.
+async function verifyClerkSession(env: Env, sessionToken: string)
+    : Promise<{ tenant: TenantContext; claims: ClerkClaims }> {
+  if (!isClerkEnabled(env)) throw createAuthError(AUTH_ERROR_CODES.sessionNotPermitted);
+  const claims = await verifyClerkSessionToken(sessionToken, env);
+  if (!claims) {
+    logger.warn("clerk sign-in refused", { event: "clerk.signin.refused", refusalReason: "invalid-token" });
+    throw createAuthError(AUTH_ERROR_CODES.invalidSessionToken);
+  }
+  const resolved = resolveTenant(env, claims);
+  if (!resolved.ok) {
+    logger.warn("clerk sign-in refused", {
+      event: "clerk.tenant.mismatch", refusalReason: resolved.reason, userId: claims.userId,
+    });
+    throw createAuthError(AUTH_ERROR_CODES.sessionNotPermitted);
+  }
+  return { tenant: resolved.tenant, claims };
 }
 
 // Re-export entrypoint types from ai-models.ts.
@@ -86,10 +115,12 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   constructor(private ctx: ExecutionContext, private env: Env,
       userId: DurableObjectId,
       private abortSession: (reason: Error) => void,
-      private accessSession?: { jwt: string; expiresAt: number }) {
+      private accessSession?: { jwt: string; expiresAt: number },
+      private clerkSession?: TenantContext) {
     super();
 
     this.#userId = userId;
+    if (clerkSession) this.#armSessionTimer();
     this.overseers = this.ctx.exports.OverseerDurableObject;
     this.adminSettings = this.ctx.exports.AdminSettings;
     this.users = this.ctx.exports.UserDurableObject;
@@ -101,6 +132,21 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
   #userId: DurableObjectId;
   #userSearchPolicyCache?: { expiresAt: number; promise: Promise<boolean> };
+  #sessionDeadline?: number;
+  #sessionTimer?: ReturnType<typeof setTimeout>;
+
+  // Restarts the Clerk liveness window; when it lapses the connection is closed.
+  #armSessionTimer(): void {
+    clearTimeout(this.#sessionTimer);
+    this.#sessionDeadline = Date.now() + CLERK_SESSION_GRACE_MS;
+    this.#sessionTimer = setTimeout(
+        () => this.abortSession(createAuthError(AUTH_ERROR_CODES.sessionExpired)),
+        CLERK_SESSION_GRACE_MS);
+  }
+
+  [Symbol.dispose](): void {
+    clearTimeout(this.#sessionTimer);
+  }
 
   #userSearchEnabled(): Promise<boolean> {
     let cached = this.#userSearchPolicyCache;
@@ -118,7 +164,16 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   // Get a stub pointing at the user DO. We create a new stub for every request so that we don't
   // have to worry about detecting when a stub has become broken.
   get #user(): DurableObjectStub<UserDurableObject> {
+    // Every user-scoped call passes through here, so a Clerk connection that has stopped renewing
+    // is refused even before its timer has closed the socket.
+    this.#assertSessionLive();
     return wrapDoStubForTelemetry(this.users.get(this.#userId));
+  }
+
+  #assertSessionLive(): void {
+    if (this.#sessionDeadline !== undefined && Date.now() > this.#sessionDeadline) {
+      throw createAuthError(AUTH_ERROR_CODES.sessionExpired);
+    }
   }
 
   #isAdmin(): boolean {
@@ -137,14 +192,67 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
       throw new TypeError("ADMINS must be configured as an array of usernames.");
     }
 
-    return admins.includes(name);
+    // ADMINS names deployment operators by user id; for a Clerk account that is the Clerk user id
+    // inside the tenant-qualified name, so an operator is an operator in every tenant.
+    return admins.includes(userIdOfProfileId(name));
   }
 
   whoami(): Promise<AiChatAuthorInfo> {
     // Pure-read delegations retry once across a user-DO reset (see retryOnDoReset); writes never do.
     return retryOnDoReset(() => this.#user.whoami());
   }
+  async renewSession(sessionToken: string): Promise<void> {
+    if (!this.clerkSession) throw createAuthError(AUTH_ERROR_CODES.sessionNotPermitted);
+    try {
+      const { tenant, claims } = await verifyClerkSession(this.env, sessionToken);
+      // A different user or tenant is a different connection: switching organizations in the
+      // browser re-authenticates rather than renewing.
+      if (tenant.userKey !== this.clerkSession.userKey) {
+        logger.warn("clerk session changed tenant", {
+          event: "clerk.tenant.mismatch", refusalReason: "session-changed", userId: tenant.userId,
+        });
+        throw createAuthError(AUTH_ERROR_CODES.sessionNotPermitted);
+      }
+      await this.#user.checkClerkSession(claims.issuedAt);
+    } catch (error) {
+      // Refused from now on, and closed shortly after so this reply still reaches the client.
+      this.#sessionDeadline = 0;
+      clearTimeout(this.#sessionTimer);
+      const reason = error instanceof Error ? error : new Error("Session renewal refused.");
+      this.#sessionTimer = setTimeout(() => this.abortSession(reason), 100);
+      throw error;
+    }
+    this.#armSessionTimer();
+  }
+  async getWorkspaceInfo(): Promise<WorkspaceInfo> {
+    const tenant = this.#clerkTenant();
+    const last = await this.#personalUser(tenant).getLastWorkspace();
+    return {
+      tenantId: tenant.tenantId,
+      kind: tenant.kind,
+      personalTenantId: personalTenantId(tenant.userId),
+      lastWorkspaceId: last ?? undefined,
+    };
+  }
+  async rememberWorkspace(): Promise<void> {
+    const tenant = this.#clerkTenant();
+    await this.#personalUser(tenant).setLastWorkspace(tenant.tenantId);
+  }
+  #clerkTenant(): TenantContext {
+    if (!this.clerkSession) throw createAuthError(AUTH_ERROR_CODES.sessionNotPermitted);
+    this.#assertSessionLive();
+    return this.clerkSession;
+  }
+  // The user's personal-tenant DO, which holds their cross-tenant memory. Addressable from any
+  // tenant because its name derives from the Clerk user id alone.
+  #personalUser(tenant: TenantContext): DurableObjectStub<UserDurableObject> {
+    return this.users.getByName(makeUserKey(personalTenantId(tenant.userId), tenant.userId));
+  }
   async beginDeviceSessionHandoff(publicKey: string, state: string) {
+    if (this.clerkSession) {
+      // The staged credential would be a Workshop session token, which a Clerk deployment refuses.
+      throw createAuthError(AUTH_ERROR_CODES.sessionNotPermitted);
+    }
     if (this.accessSession?.expiresAt !== undefined &&
         this.accessSession.expiresAt <= Date.now()) {
       throw new Error("The Access session has expired. Sign in again before connecting the app.");
@@ -161,7 +269,8 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
   async searchUsers(query: string, excludeIds: string[]): Promise<UserDirectoryRecord[]> {
     if (!(await this.#userSearchEnabled())) return [];
-    return retryOnDoReset(() => this.ctx.exports.UserDirectoryDurableObject.getByName("")
+    return retryOnDoReset(() => this.ctx.exports.UserDirectoryDurableObject
+        .getByName(tenantOfProfileId(this.#userId.name!))
         .searchUsers(query, [this.#userId.name!, ...excludeIds]));
   }
   changePassword(oldHash: Uint8Array, newHash: Uint8Array): Promise<void> {
@@ -749,6 +858,8 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
   }
 
   async authenticate(token: string): Promise<AuthenticatedApi> {
+    // A Clerk deployment accepts only Clerk sessions; Workshop session tokens never authenticate.
+    if (isClerkEnabled(this.env)) throw createAuthError(AUTH_ERROR_CODES.sessionNotPermitted);
     let split = token.split(':');
     if (split.length !== 2) {
       throw createAuthError(AUTH_ERROR_CODES.invalidSessionToken);
@@ -788,6 +899,37 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
     });
     return new AuthenticatedApiImpl(this.ctx, this.env, userId, this.abortSession,
         { jwt: this.accessSession.jwt, expiresAt: (this.accessSession.payload.exp ?? 0) * 1000 });
+  }
+
+  async authenticateFromClerk(sessionToken: string): Promise<AuthenticatedApi> {
+    const { tenant, claims } = await verifyClerkSession(this.env, sessionToken);
+    const userId = this.users.idFromName(tenant.userKey);
+    const signupsEnabled = (await readAdminConfig(this.env)).signupsEnabled;
+    const accountCreated = await this.users.get(userId).authenticateFromClerk({
+      userKey: tenant.userKey,
+      displayName: claims.name ?? claims.email?.split("@")[0],
+      allowCreate: signupsEnabled,
+      tokenIssuedAt: claims.issuedAt,
+    });
+    if (tenant.kind === "organization") {
+      // Remembered so deleting the account can end this membership too.
+      await this.users.getByName(makeUserKey(personalTenantId(tenant.userId), tenant.userId))
+          .noteKnownTenant(tenant.tenantId);
+    }
+    if (accountCreated) {
+      recordAnalytics(this.ctx, this.env, {
+        event_name: "account_created",
+        user_id: userId.toString(),
+        source: "clerk",
+      });
+    }
+    recordAnalytics(this.ctx, this.env, {
+      event_name: "user_authenticated",
+      user_id: userId.toString(),
+      source: "clerk",
+    });
+    return new AuthenticatedApiImpl(this.ctx, this.env, userId, this.abortSession,
+        undefined, tenant);
   }
 
   async login(username: string, passwordHash: Uint8Array): Promise<string | null> {
@@ -883,6 +1025,10 @@ export default {
 
     if (url.pathname === "/api/client-errors") {
       return handleClientErrorRequest(req, env, ctx);
+    }
+
+    if (url.pathname === "/api/clerk-webhook") {
+      return handleClerkWebhook(req, env, ctx.exports.UserDurableObject);
     }
 
     if (url.pathname === "/api/device-session/callback") {

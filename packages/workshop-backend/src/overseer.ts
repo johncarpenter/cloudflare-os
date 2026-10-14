@@ -73,6 +73,7 @@ import { checkUsageAndBalance } from "./ai-gateway-billing/limits/usage-checker"
 import { normalizeAgentCatalog } from "./agent-catalog";
 import { refreshCachedBalance } from "./ai-gateway-billing/cloudflare/connection-service";
 import { SharingManager, SharingCaller, roleRank } from "./sharing";
+import { sameTenant } from "./tenant";
 import { AutoApprovalDrainer, autoApprovalRule } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext } from "./observability";
@@ -9463,6 +9464,22 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
+   * Deletes this workspace's storage because its owner's account was erased (see
+   * `UserDurableObject.eraseAccount`, which has already revoked the owner's gatekeeper accounts so
+   * hooks stop delivering). A no-op unless the caller really is the owner, so nobody else can
+   * delete it.
+   */
+  async eraseOwnedWorkspace(ownerId: string): Promise<void> {
+    if (this.impl.ownerId !== ownerId) return;
+    this.impl.destroyAllLiveChats();
+    await this.ctx.blockConcurrencyWhile(async () => {
+      await this.ctx.storage.deleteAll();
+      this.impl.scheduleAccessRestart("Gadget restarted because the workspace was deleted.");
+      this.impl.ownerId = undefined;
+    });
+  }
+
+  /**
    * `notifyClosed` should be invoked when the return `Overseer` stub is disposed, which is used
    * by AuthenticatedApiImpl.#openGadgetInternal() to detect Durable Object disconnects.
    */
@@ -9534,6 +9551,12 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     let role: CollaboratorRole = "build";
 
     if (!isOwner) {
+      // Tenants are isolated: nobody outside the owner's tenant may open this workspace, whatever
+      // grant, share link or chain of grants they hold.
+      let ownerProfileId = this.impl.ownerProfileId ?? (await owner.whoami()).id;
+      if (!sameTenant(profileId, ownerProfileId)) {
+        throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied);
+      }
       let sharing = await this.impl.getSharingManager();
 
       // If a share key was provided, redeem it. The owner already has full access and should not
@@ -11817,7 +11840,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     let userDoId = this.impl.users.idFromName(username);
     let userDo = this.impl.users.get(userDoId);
     let profile = await userDo.whoamiIfExists();
-    if (!profile) {
+    // Another tenant's user is answered exactly like a missing one, so the answer reveals nothing.
+    if (!profile || !sameTenant(profile.id, this.clientProfileId)) {
       return null;
     }
 

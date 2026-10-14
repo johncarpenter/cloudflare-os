@@ -230,6 +230,16 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       // (-1 = never, which also lazily backfills users created before the
       // directory existed). See #syncDirectory().
       directoryRev: -1,
+
+      // Clerk accounts: epoch ms at which the user's membership of this tenant ended (set by the
+      // organizationMembership.deleted webhook). A session whose token was issued at or before it
+      // is refused; a later token means the user was re-added. null = never ended.
+      membershipEndedAt: <number | null>null,
+      // Clerk accounts, personal-tenant DO only: the tenant the user last remembered (see
+      // AuthenticatedApi.rememberWorkspace) and the organization tenants they have signed in to,
+      // which account deletion must end.
+      lastWorkspace: <string | null>null,
+      knownTenants: <string[]>[],
     }
   });
 }

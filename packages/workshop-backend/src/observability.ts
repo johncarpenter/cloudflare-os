@@ -30,14 +30,17 @@ export type WorkshopObservabilityFields = {
   outcome: "ok" | "error" | "usage_limit" | "no_email" | "signups_disabled";
   path: string;
   recordedType: string;
+  refusalReason: string;
   resourceTitle: string;
   sequence: number;
   size: number;
   status: number;
   statusCode: number;
   statusText: string;
+  tenantId: string;
   toolCallId: string;
   toolName: string;
+  userId: string;
   vendorId: string;
 };
 

@@ -24,6 +24,7 @@ import {
   DEVICE_HANDOFF_LIFETIME_MS, isDeviceHandoffState, sealDeviceSessionHandoff,
   type DeviceSessionCredential, type DeviceSessionHandoff,
 } from "./auth/device-session-handoff.js";
+import { makeUserKey, tenantOfProfileId, userIdOfProfileId } from "./tenant.js";
 
 const logger = createWorkshopLogger("workshop.user");
 
@@ -217,7 +218,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     const rev = this.storage.profileRev.get();
     if (rev === this.storage.directoryRev.get()) return;
     const profile = this.storage.profile.get();
-    this.ctx.exports.UserDirectoryDurableObject.getByName("")
+    this.ctx.exports.UserDirectoryDurableObject.getByName(tenantOfProfileId(profile.id))
         .syncUser({ id: profile.id, name: profile.name }, rev)
         .then(() => {
           if (rev > this.storage.directoryRev.get()) this.storage.directoryRev.put(rev);
@@ -277,6 +278,126 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
     this.#syncDirectory();
     return isNew;
+  }
+
+  // Refuses a Clerk session whose token predates the end of this user's membership of the tenant.
+  // A token issued after it means the user was added back.
+  #assertMembership(tokenIssuedAt: number): void {
+    const endedAt = this.storage.membershipEndedAt.get();
+    if (endedAt !== null && tokenIssuedAt <= endedAt) {
+      throw createAuthError(AUTH_ERROR_CODES.sessionNotPermitted);
+    }
+  }
+
+  /**
+   * Authenticates a verified Clerk session for this tenant-keyed user, creating the account on
+   * first use (refused when deployment signups are closed; existing users still sign in). `userKey`
+   * must be this DO's own name, so a bug upstream cannot attach one user's session to another's
+   * data. A present display name from the token replaces the stored one. Returns true when this
+   * call created the account.
+   */
+  async authenticateFromClerk(
+      input: { userKey: string; displayName?: string; allowCreate: boolean; tokenIssuedAt: number })
+      : Promise<boolean> {
+    if (this.ctx.id.name !== input.userKey) {
+      throw createAuthError(AUTH_ERROR_CODES.sessionNotPermitted);
+    }
+    this.#assertMembership(input.tokenIssuedAt);
+
+    const isNew = !this.storage.created.get();
+    if (isNew) {
+      if (!input.allowCreate) {
+        throw new Error("New sign-ups are currently disabled on this deployment.");
+      }
+      this.storage.created.put(true);
+      this.storage.profile.put({
+        type: "user",
+        name: input.displayName ?? "User",
+        id: input.userKey,
+      });
+    } else if (input.displayName && input.displayName !== this.storage.profile.get().name) {
+      await this.setOwnDisplayName(input.displayName);
+    }
+    this.#syncDirectory();
+    return isNew;
+  }
+
+  /** Re-checks a renewed Clerk session: refused once the membership has ended. */
+  async checkClerkSession(tokenIssuedAt: number): Promise<void> {
+    this.#assertMembership(tokenIssuedAt);
+  }
+
+  /**
+   * Ends this user's membership of the tenant at `endedAt`: sessions issued before it are refused
+   * and every connected account's credentials are revoked. Their workspaces stay with the tenant.
+   */
+  async endMembership(endedAt: number): Promise<void> {
+    const previous = this.storage.membershipEndedAt.get();
+    this.storage.membershipEndedAt.put(previous === null ? endedAt : Math.max(previous, endedAt));
+    await this.#revokeAllAccounts();
+  }
+
+  /**
+   * Erases a deleted Clerk user's personal tenant: revokes their credentials, ends their
+   * memberships of the organizations they signed in to, deletes the workspaces they own, removes
+   * them from the directory, and drops all of this DO's storage. Organization content they
+   * created stays with the organization. Called only for the personal-tenant DO.
+   */
+  async eraseAccount(): Promise<void> {
+    const userKey = this.ctx.id.name;
+    if (!userKey) throw new Error("Only a named user can be erased.");
+    const userId = userIdOfProfileId(userKey);
+    await this.#revokeAllAccounts();
+
+    const exports = this.ctx.exports;
+    const now = Date.now();
+    const ownerId = this.ctx.id.toString();
+    const owned = Array.from(this.storage.gadgets.list()).filter(gadget => !gadget.owner);
+    const outcomes = await Promise.allSettled([
+      ...this.storage.knownTenants.get().map(tenantId =>
+          exports.UserDurableObject.getByName(makeUserKey(tenantId, userId)).endMembership(now)),
+      ...owned.map(gadget => exports.OverseerDurableObject
+          .get(exports.OverseerDurableObject.idFromString(gadget.id)).eraseOwnedWorkspace(ownerId)),
+      exports.UserDirectoryDurableObject.getByName(tenantOfProfileId(userKey)).removeUser(userKey),
+    ]);
+    // A step that fails leaves data behind, so fail the call: the webhook retries and every step
+    // is idempotent.
+    const failure = outcomes.find(outcome => outcome.status === "rejected");
+    if (failure) throw failure.reason;
+
+    await this.ctx.storage.deleteAlarm();
+    await this.ctx.storage.deleteAll();
+  }
+
+  /** Records an organization tenant this (personal-tenant) user signed in to. */
+  async noteKnownTenant(tenantId: string): Promise<void> {
+    const known = this.storage.knownTenants.get();
+    if (!known.includes(tenantId)) this.storage.knownTenants.put([...known, tenantId]);
+  }
+
+  /** The tenant this (personal-tenant) user last remembered, or null. */
+  async getLastWorkspace(): Promise<string | null> {
+    return this.storage.lastWorkspace.get();
+  }
+
+  /** Remembers `tenantId` as this (personal-tenant) user's last-used workspace. */
+  async setLastWorkspace(tenantId: string): Promise<void> {
+    this.storage.lastWorkspace.put(tenantId);
+  }
+
+  // Revokes and forgets every connected account. Best-effort per account: one gatekeeper failing
+  // must not leave the others' credentials live.
+  async #revokeAllAccounts(): Promise<void> {
+    for (const record of Array.from(this.storage.connectedAccounts.list())) {
+      try {
+        await record.account.revoke();
+      } catch (err) {
+        logger.error("revoke() failed while ending a tenant membership", {
+          event: "account.revoke.failed", vendorId: record.vendorId, accountId: record.id, error: err,
+        });
+      }
+      this.storage.connectedAccounts.delete(record.id);
+    }
   }
 
   async #newSessionToken(options: { expiresAt?: Date; pendingUntil?: Date } = {}): Promise<string> {

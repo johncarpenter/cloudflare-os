@@ -4,7 +4,7 @@
 
 import { AuthVendorInfo, ServerConfig } from "@gadgets/workshop-shared/api";
 import { createWorkshopLogger } from "./observability";
-import { getAuthGatekeeperAllowlist, isPasswordAuthEnabled } from "./auth/config.js";
+import { getAuthGatekeeperAllowlist, isClerkEnabled, isPasswordAuthEnabled } from "./auth/config.js";
 import { isCloudflareLimitsEnabled } from "./ai-gateway-billing/config.js";
 import { getAuthVendorBinding } from "./auth/auth-vendors.js";
 import { readAdminConfig } from "./admin-config.js";
@@ -59,5 +59,8 @@ export async function getServerConfig(env: Cloudflare.Env): Promise<ServerConfig
     banner: config.banner.text,
     bannerColor: config.banner.color,
     accentColor: config.accentColor,
+    clerk: isClerkEnabled(env) && env.CLERK_PUBLISHABLE_KEY
+        ? { publishableKey: env.CLERK_PUBLISHABLE_KEY }
+        : undefined,
   };
 }

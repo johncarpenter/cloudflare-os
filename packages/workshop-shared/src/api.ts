@@ -111,6 +111,17 @@ export interface PublicApi extends RpcTarget {
   authenticateFromCfAccess(): Promise<AuthenticatedApi>;
 
   /**
+   * Authenticates with a Clerk session token (the browser's current session JWT) on a deployment
+   * that has Clerk sign-in enabled (`ServerConfig.clerk`). The tenant is derived from the verified
+   * token (its active organization, else the user's personal tenant), never from an argument.
+   * Throws a coded auth error (`getAuthErrorCode`) when Clerk is not enabled, the token is invalid
+   * or expired, the deployment is dedicated to another organization, or the user's membership of
+   * the token's organization has ended. Creates nothing for a refused session. The connection must
+   * then be kept alive with `AuthenticatedApi.renewSession()`.
+   */
+  authenticateFromClerk(sessionToken: string): Promise<AuthenticatedApi>;
+
+  /**
    * Login with username and password.
    *
    * Returns a token to store in local storage and pass to `authenticate()` in the future.
@@ -411,6 +422,8 @@ export const getOpenGadgetErrorCode = openGadgetErrors.getCode;
 export const AUTH_ERROR_CODES = {
   invalidSessionToken: "INVALID_SESSION_TOKEN",
   notAuthenticatedWithAccess: "NOT_AUTHENTICATED_WITH_ACCESS",
+  sessionNotPermitted: "SESSION_NOT_PERMITTED",
+  sessionExpired: "SESSION_EXPIRED",
 } as const;
 
 /** An expected authentication failure code. */
@@ -421,6 +434,8 @@ export type AuthErrorCode = typeof AUTH_ERROR_CODES[keyof typeof AUTH_ERROR_CODE
 export const AUTH_ERROR_MESSAGES: Record<AuthErrorCode, string> = {
   [AUTH_ERROR_CODES.invalidSessionToken]: "invalid session token",
   [AUTH_ERROR_CODES.notAuthenticatedWithAccess]: "Not authenticated with Access.",
+  [AUTH_ERROR_CODES.sessionNotPermitted]: "This session is not permitted to use this workspace.",
+  [AUTH_ERROR_CODES.sessionExpired]: "This session has expired. Sign in again.",
 };
 
 const authErrors = codedErrorFamily(AUTH_ERROR_MESSAGES);
@@ -437,8 +452,9 @@ export const getAuthErrorCode = authErrors.getCode;
  */
 export type UserDirectoryRecord = {
   /**
-   * Canonical user identifier: email for Access / sign-in accounts, username
-   * for password accounts.
+   * Canonical user identifier: email for Access / sign-in accounts, username for password
+   * accounts, and an opaque tenant-qualified key for Clerk accounts. Treat it as opaque and
+   * display `name`.
    */
   id: string;
 
@@ -458,6 +474,25 @@ export type DeviceSessionHandoffStart = {
 export interface AuthenticatedApi extends RpcTarget {
   /** Get profile info for the user who is logged in. */
   whoami(): Promise<AiChatAuthorInfo>;
+
+  /**
+   * Keeps a Clerk-authenticated connection alive by presenting a fresh session token. The token
+   * must be for the same user and tenant as the connection; otherwise the connection is refused
+   * and closed (a coded auth error is thrown first). A connection that is not renewed for 75
+   * seconds is refused and closed, so call this at least every 30 seconds with a freshly fetched
+   * token. Throws on connections that did not authenticate with Clerk.
+   */
+  renewSession(sessionToken: string): Promise<void>;
+
+  /** The tenant this connection acts in and the workspace the user last remembered. */
+  getWorkspaceInfo(): Promise<WorkspaceInfo>;
+
+  /**
+   * Remembers this connection's tenant as the user's last-used workspace, across devices, so the
+   * next sign-in on another device can open it. The tenant is the verified one; there is no
+   * argument.
+   */
+  rememberWorkspace(): Promise<void>;
 
   /**
    * Stage a two-minute, single-use device-session transfer for a native app. The state is an
@@ -1410,6 +1445,27 @@ export type AuthVendorInfo = {
   color?: string;
 };
 
+/** What the browser needs to start Clerk. Public by design. */
+export type ClerkClientConfig = {
+  /** The Clerk publishable key (`pk_...`). */
+  publishableKey: string;
+};
+
+/** The tenant a connection acts in, as returned by `AuthenticatedApi.getWorkspaceInfo()`. */
+export type WorkspaceInfo = {
+  /** The verified tenant id: a Clerk organization id, or the user's personal tenant. */
+  tenantId: string;
+
+  /** Whether the tenant is an organization or the user's personal workspace. */
+  kind: "organization" | "personal";
+
+  /** The tenant id of this user's personal workspace, to recognise it in `lastWorkspaceId`. */
+  personalTenantId: string;
+
+  /** The tenant the user last remembered with `rememberWorkspace()`, if any. */
+  lastWorkspaceId?: string;
+};
+
 /**
  * Deployment-level configuration that the client needs at boot to decide what UI to render.
  * Returned by `PublicApi.getServerConfig()`. Contains no secrets.
@@ -1468,6 +1524,12 @@ export type ServerConfig = {
    * overrides the brand CSS variables with this (and derived shades) at runtime.
    */
   accentColor: string;
+
+  /**
+   * Present only when the deployment uses Clerk for sign-in. The client then signs users in with
+   * Clerk and calls `PublicApi.authenticateFromClerk()`; every other sign-in option is off.
+   */
+  clerk?: ClerkClientConfig;
 };
 
 /**
