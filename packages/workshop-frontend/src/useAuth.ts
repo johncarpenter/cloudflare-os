@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { RpcStub } from 'capnweb'
-import { PublicApi, AuthenticatedApi } from '@gadgets/workshop-shared/api'
+import { PublicApi, AuthenticatedApi, AUTH_ERROR_CODES, getAuthErrorCode } from '@gadgets/workshop-shared/api'
 import { setReportedUserId } from './errorReporting'
+import { useClerkBridge } from './clerk/clerkBridge'
+import { restoreOrRememberWorkspace, startSessionRenewal } from './clerk/clerkSession'
 
 const CF_ACCESS_MODE = import.meta.env.VITE_CF_ACCESS_MODE === 'true'
 
@@ -26,6 +28,18 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
   // State closures go stale in cleanup functions, so we use a ref.
   const authenticatedApiRef = useRef<RpcStub<AuthenticatedApi> | null>(null)
   authenticatedApiRef.current = authState.authenticatedApi
+
+  // Clerk, when it is this deployment's sign-in method. Its functions are read through a ref so the
+  // effect below restarts only when the signed-in user or active organization actually changes.
+  const clerk = useClerkBridge()
+  const clerkRef = useRef(clerk)
+  clerkRef.current = clerk
+  const clerkLoaded = clerk?.isLoaded ?? false
+  const clerkSignedIn = clerk?.isSignedIn ?? false
+  const clerkUserId = clerk?.userId ?? null
+  const clerkOrgId = clerk?.orgId ?? null
+  // Bumped when the server refuses a renewal, to re-authenticate from scratch.
+  const [clerkEpoch, setClerkEpoch] = useState(0)
 
   /**
    * Names the signed-in user on error reports, for as long as this stub is the current one.
@@ -56,7 +70,9 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
   }, [authState.authenticatedApi])
 
   useEffect(() => {
-    if (CF_ACCESS_MODE) {
+    if (clerkRef.current) {
+      // Sign-in is Clerk's (see the effect below); a stored Workshop token is not used.
+    } else if (CF_ACCESS_MODE) {
       authenticateWithCfAccess()
     } else {
       const storedToken = localStorage.getItem('authToken')
@@ -72,6 +88,66 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
       authenticatedApiRef.current?.[Symbol.dispose]()
     }
   }, [publicApi])
+
+  // Clerk sign-in: one authenticated connection per (user, active organization). Changing either
+  // drops the old connection first, so nothing from the previous workspace stays on screen.
+  useEffect(() => {
+    const bridge = clerkRef.current
+    if (!bridge || !bridge.isLoaded) return
+    let cancelled = false
+    let stopRenewal: (() => void) | undefined
+
+    setAuthState(prev => {
+      prev.authenticatedApi?.[Symbol.dispose]()
+      return { token: null, authenticatedApi: null, isLoading: bridge.isSignedIn, error: null }
+    })
+    if (!bridge.isSignedIn) return
+
+    const fail = (message: string) => {
+      setAuthState(prev => {
+        prev.authenticatedApi?.[Symbol.dispose]()
+        return { token: null, authenticatedApi: null, isLoading: false, error: message }
+      })
+    }
+
+    bridge.getToken().then((token) => {
+      if (cancelled) return
+      if (!token) {
+        fail('Could not start your session. Please sign in again.')
+        return
+      }
+      // Pipelined, like the other sign-in paths; whoami() below surfaces a refusal.
+      const authenticatedApi = publicApi.authenticateFromClerk(token)
+      setAuthState({ token: null, authenticatedApi, isLoading: false, error: null })
+      authenticatedApi.whoami().then(() => {
+        if (cancelled) return
+        stopRenewal = startSessionRenewal(
+          authenticatedApi,
+          (options) => bridge.getToken(options),
+          () => setClerkEpoch((epoch) => epoch + 1))
+        restoreOrRememberWorkspace(
+          authenticatedApi, (organizationId) => bridge.switchOrganization(organizationId),
+        ).catch(() => {})
+      }).catch((error) => {
+        // A dropped connection is replaced by main.tsx, which restarts this effect; only the
+        // server's own refusals are final here.
+        if (cancelled || getAuthErrorCode(error) === undefined) return
+        if (getAuthErrorCode(error) === AUTH_ERROR_CODES.sessionNotPermitted && bridge.orgId) {
+          // Not (or no longer) a member of this organization: continue in the personal workspace.
+          bridge.switchOrganization(null).catch(() => fail(error.message))
+          return
+        }
+        fail(error instanceof Error ? error.message : 'This session is not permitted.')
+      })
+    }).catch(() => {
+      if (!cancelled) fail('Could not start your session. Please sign in again.')
+    })
+
+    return () => {
+      cancelled = true
+      stopRenewal?.()
+    }
+  }, [publicApi, clerkLoaded, clerkSignedIn, clerkUserId, clerkOrgId, clerkEpoch])
 
   const authenticateWithCfAccess = () => {
     setAuthState(prev => {
@@ -125,6 +201,15 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
   const logout = () => {
     setReportedUserId(undefined)
 
+    if (clerkRef.current) {
+      setAuthState(prev => {
+        prev.authenticatedApi?.[Symbol.dispose]()
+        return { token: null, authenticatedApi: null, isLoading: false, error: null }
+      })
+      void clerkRef.current.signOut()
+      return
+    }
+
     if (CF_ACCESS_MODE) {
       window.location.assign('/cdn-cgi/access/logout')
       return
@@ -148,6 +233,8 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
 
   return {
     ...authState,
+    // Clerk has to report whether anyone is signed in before we know what to show.
+    isLoading: authState.isLoading || (clerk !== null && !clerk.isLoaded),
     login,
     logout,
     isAuthenticated: !!authState.authenticatedApi

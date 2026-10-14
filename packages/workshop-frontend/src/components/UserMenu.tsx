@@ -3,10 +3,12 @@ import { DropdownMenu } from '@cloudflare/kumo'
 import { useAuthenticatedApi } from '../AuthContext'
 import { useAvatar } from '../useAvatar'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from './menuStyles'
+import { useClerkBridge } from '../clerk/clerkBridge'
 
 export default function UserMenu() {
   const { authenticatedApi, logout, currentUser, isAdmin } = useAuthenticatedApi()
   const navigate = useNavigate()
+  const clerk = useClerkBridge()
 
   const avatarUrl = useAvatar(authenticatedApi, currentUser?.id)
 
@@ -38,6 +40,11 @@ export default function UserMenu() {
         >
           Profile
         </DropdownMenu.Item>
+        {clerk && (
+          <DropdownMenu.Item onClick={clerk.openUserProfile} className={MENU_ITEM}>
+            Manage account
+          </DropdownMenu.Item>
+        )}
         <DropdownMenu.Item
           onClick={() => navigate({ to: '/providers' })}
           className={MENU_ITEM}

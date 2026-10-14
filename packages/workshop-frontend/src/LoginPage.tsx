@@ -11,6 +11,7 @@ import { useConnectionLost } from './RpcContext'
 import OAuthButtons from './components/auth/OAuthButtons'
 import SiteLogo from './components/SiteLogo'
 import { deviceSessionSearch } from './features/native-app/DeviceSessionHandoff'
+import ClerkSignInPage from './clerk/ClerkSignInPage'
 
 
 interface LoginPageProps {
@@ -82,6 +83,8 @@ export default function LoginPage({ rpcStub, onLoginSuccess }: LoginPageProps) {
       </div>
     )
   }
+
+  if (serverConfig.clerk) return <ClerkSignInPage mode="sign-in" />
 
   const authVendors = serverConfig.authVendors ?? []
   const passwordAuthEnabled = serverConfig.passwordAuthEnabled

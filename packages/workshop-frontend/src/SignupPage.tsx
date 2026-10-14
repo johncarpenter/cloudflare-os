@@ -10,6 +10,7 @@ import { useDocumentTitle } from "./useDocumentTitle";
 import OAuthButtons from "./components/auth/OAuthButtons";
 import SiteLogo from "./components/SiteLogo";
 import { useConnectionLost } from "./RpcContext";
+import ClerkSignInPage from "./clerk/ClerkSignInPage";
 import {
   deviceSessionDestination,
   deviceSessionSearch,
@@ -108,6 +109,8 @@ export default function SignupPage({ rpcStub }: SignupPageProps) {
       </div>
     );
   }
+
+  if (serverConfig.clerk) return <ClerkSignInPage mode="sign-up" />;
 
   const authVendors = serverConfig.authVendors ?? [];
   const signupsEnabled = serverConfig.signupsEnabled;

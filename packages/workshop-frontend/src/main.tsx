@@ -14,6 +14,7 @@ import FrontendErrorBoundary from './FrontendErrorBoundary'
 import { installWorkshopErrorReporting, reportIssue } from './errorReporting'
 import { applySiteFavicon, cacheBustSiteLogoUrl } from './siteLogoUtils'
 import { getBackendHost } from './connectHandoff';
+import ClerkAppProvider from './clerk/ClerkAppProvider'
 
 // ---------------------------------------------------------------------------
 // Dev auto-login: if VITE_DEV_AUTO_LOGIN=true, automatically create/login
@@ -246,12 +247,14 @@ function AppWithConnection() {
       <RpcContext.Provider value={rpcState}>
         <ServerConfigErrorContext.Provider value={serverConfigError}>
           <ServerConfigContext.Provider value={serverConfig}>
-            <div className="app-viewport flex min-w-0 flex-col overflow-hidden">
-              <AnnouncementBanner />
-              <div className="h-full min-h-0 flex-1">
-                <RouterProvider router={router} />
+            <ClerkAppProvider>
+              <div className="app-viewport flex min-w-0 flex-col overflow-hidden">
+                <AnnouncementBanner />
+                <div className="h-full min-h-0 flex-1">
+                  <RouterProvider router={router} />
+                </div>
               </div>
-            </div>
+            </ClerkAppProvider>
           </ServerConfigContext.Provider>
         </ServerConfigErrorContext.Provider>
       </RpcContext.Provider>

@@ -5,6 +5,7 @@ import { useGatekeeperApps } from '../useGatekeeperApps'
 import { useSiteName } from '../ServerConfigContext'
 import { useState, useEffect, useRef } from 'react'
 import UserMenu from './UserMenu'
+import WorkspaceSwitcher from '../clerk/WorkspaceSwitcher'
 import TopBarNotice from '../TopBarNotice'
 import SiteLogo from './SiteLogo'
 
@@ -95,9 +96,10 @@ export default function Header() {
 
         {/* Right side */}
         <div className="flex items-center gap-2">
-          {/* Desktop avatar dropdown */}
+          {/* Desktop workspace switcher and avatar dropdown */}
           {auth && (
-            <div className="hidden sm:block">
+            <div className="hidden sm:flex items-center gap-2">
+              <WorkspaceSwitcher />
               <UserMenu />
             </div>
           )}
@@ -160,6 +162,9 @@ export default function Header() {
             {auth && (
               <>
                 <hr className="my-2 border-kumo-line" />
+                <div className="px-3 py-1.5">
+                  <WorkspaceSwitcher />
+                </div>
 
                 <Link
                   to="/profile"
