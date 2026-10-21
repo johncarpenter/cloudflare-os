@@ -4,11 +4,13 @@ import { useAuthenticatedApi } from '../AuthContext'
 import { useAvatar } from '../useAvatar'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from './menuStyles'
 import { useClerkBridge } from '../clerk/clerkBridge'
+import { useTenantBranding } from '../branding/useTenantBranding'
 
 export default function UserMenu() {
   const { authenticatedApi, logout, currentUser, isAdmin } = useAuthenticatedApi()
   const navigate = useNavigate()
   const clerk = useClerkBridge()
+  const { canManage: canBrand } = useTenantBranding()
 
   const avatarUrl = useAvatar(authenticatedApi, currentUser?.id)
 
@@ -51,6 +53,14 @@ export default function UserMenu() {
         >
           Providers
         </DropdownMenu.Item>
+        {canBrand && (
+          <DropdownMenu.Item
+            onClick={() => navigate({ to: '/organization' })}
+            className={MENU_ITEM}
+          >
+            Organization branding
+          </DropdownMenu.Item>
+        )}
         {isAdmin && (
           <DropdownMenu.Item
             onClick={() => navigate({ to: '/admin' })}

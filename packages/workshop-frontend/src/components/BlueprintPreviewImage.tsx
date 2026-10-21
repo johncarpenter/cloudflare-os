@@ -1,22 +1,30 @@
 import { Hexagon } from '@phosphor-icons/react'
 import { getGradient } from './BlueprintCard'
+import { useOptionalAuthenticatedApi } from '../AuthContext'
+import { useBlueprintImage } from './useBlueprintImage'
 
 export function BlueprintPreviewImage({
   blueprintId,
   title,
   screenshotUrl,
+  hasScreenshot,
   className,
 }: {
   blueprintId: string
   title: string
   screenshotUrl?: string
+  hasScreenshot?: boolean
   className?: string
 }) {
+  const src = useBlueprintImage(
+    { id: blueprintId, screenshotUrl, hasScreenshot },
+    useOptionalAuthenticatedApi()?.authenticatedApi,
+  )
   return (
     <div className={`overflow-hidden rounded-xl border border-kumo-line bg-kumo-tint ${className ?? ''}`}>
-      {screenshotUrl ? (
+      {src ? (
         <img
-          src={screenshotUrl}
+          src={src}
           alt={`Screenshot of ${title}`}
           className="aspect-[16/9] w-full object-cover"
           loading="lazy"

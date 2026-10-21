@@ -4,7 +4,7 @@ import type {
   BlueprintMetadata,
   BlueprintPublicInfo,
   GadgetUpstream,
-  PublicApi,
+  AuthenticatedApi,
 } from '@gadgets/workshop-shared/api'
 import { logRpcFailure } from '../../rpcErrors'
 
@@ -29,7 +29,7 @@ export const hasNewerRelease = (upstream: GadgetUpstream, blueprint: BlueprintMe
  * stays open is not noticed until then.
  */
 export const useBlueprintUpdateAvailable = (
-  publicApi: RpcStub<PublicApi>,
+  authenticatedApi: RpcStub<AuthenticatedApi>,
   upstream: GadgetUpstream | undefined,
 ): boolean => {
   const [followed, setFollowed] = useState<BlueprintPublicInfo | null>(null)
@@ -39,12 +39,12 @@ export const useBlueprintUpdateAvailable = (
   useEffect(() => {
     if (blueprintId === undefined || takenRelease === undefined) return
     let cancelled = false
-    publicApi.getBlueprint(blueprintId).then(
+    authenticatedApi.getBlueprint(blueprintId).then(
       blueprint => { if (!cancelled) setFollowed(blueprint) },
       err => { logRpcFailure('Failed to check a blueprint for updates:', err) },
     )
     return () => { cancelled = true }
-  }, [publicApi, blueprintId, takenRelease])
+  }, [authenticatedApi, blueprintId, takenRelease])
 
   // `followed` may still be the blueprint of the gadget selected before this one.
   return upstream !== undefined && followed !== null && followed.id === upstream.blueprintId &&

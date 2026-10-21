@@ -12,7 +12,7 @@ import type {
   GadgetClient,
   GadgetUpstream,
   Overseer,
-  PublicApi,
+  AuthenticatedApi,
 } from '@gadgets/workshop-shared/api'
 import { NO_AGENT_OPTION_VALUE } from '../../modelSelection'
 
@@ -202,7 +202,7 @@ async function open(upstream?: GadgetUpstream) {
           client: { applyBlueprint } as unknown as RpcStub<GadgetClient>,
         }}
         overseer={{ listModels } as unknown as RpcStub<Overseer>}
-        publicApi={{ getBlueprint } as unknown as RpcStub<PublicApi>}
+        authenticatedApi={{ getBlueprint } as unknown as RpcStub<AuthenticatedApi>}
         onClose={onClose}
         onProposed={onProposed}
       />,

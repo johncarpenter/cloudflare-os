@@ -11,7 +11,9 @@ import type {
   BlueprintPublicInfo,
   ModelKind,
   PublicApi,
+  ServerConfig,
 } from '@gadgets/workshop-shared/api'
+import { ServerConfigContext } from './ServerConfigContext'
 
 const testState = vi.hoisted(() => ({
   authenticatedApi: null as RpcStub<AuthenticatedApi> | null,
@@ -31,7 +33,7 @@ vi.mock('@tanstack/react-router', async (importOriginal) => ({
 
 vi.mock('./useAuth', () => ({
   useAuth: () => ({
-    isAuthenticated: true,
+    isAuthenticated: testState.authenticatedApi !== null,
     authenticatedApi: testState.authenticatedApi,
     isLoading: false,
     login: vi.fn<(token: string) => void>(),
@@ -80,8 +82,9 @@ function subscription() {
   })
 }
 
-function authenticatedApi(): RpcStub<AuthenticatedApi> {
+function authenticatedApi(blueprint: BlueprintPublicInfo | null = BLUEPRINT): RpcStub<AuthenticatedApi> {
   return {
+    getBlueprint: async () => blueprint,
     listModels: async (kind?: ModelKind) => kind === 'decision' ? [DECISION_MODEL] : [MODEL],
     listGatekeeperVendors: async () => [],
     subscribeConnectedAccounts: subscription,
@@ -92,7 +95,7 @@ function authenticatedApi(): RpcStub<AuthenticatedApi> {
   } as unknown as RpcStub<AuthenticatedApi>
 }
 
-function publicApi(blueprint: BlueprintPublicInfo): RpcStub<PublicApi> {
+function publicApi(blueprint: BlueprintPublicInfo | null): RpcStub<PublicApi> {
   return {
     getBlueprint: async () => blueprint,
   } as unknown as RpcStub<PublicApi>
@@ -111,7 +114,7 @@ describe('BlueprintLandingPage model configuration', () => {
 
   // Opens the model picker of the blueprint's binding, returning the picker's trigger.
   const openModelPicker = async (blueprint = BLUEPRINT) => {
-    testState.authenticatedApi = authenticatedApi()
+    testState.authenticatedApi = authenticatedApi(blueprint)
     rootContainer = document.createElement('div')
     document.body.appendChild(rootContainer)
     root = createRoot(rootContainer)
@@ -160,5 +163,59 @@ describe('BlueprintLandingPage model configuration', () => {
 
     expect(Array.from(document.body.querySelectorAll('[role="option"]'), option => option.textContent))
       .toEqual(options)
+  })
+})
+
+describe('BlueprintLandingPage access', () => {
+  let root: Root | undefined
+  let rootContainer: HTMLDivElement | undefined
+
+  afterEach(() => {
+    act(() => root?.unmount())
+    rootContainer?.remove()
+    testState.authenticatedApi = null
+  })
+
+  const ORGANIZATIONS = { clerk: { publishableKey: 'pk_test_x' } } as unknown as ServerConfig
+  const DEPLOYMENT = {} as ServerConfig
+
+  async function open(options: {
+    signedIn: boolean
+    config: ServerConfig
+    signedInSees: BlueprintPublicInfo | null
+    publicSees: BlueprintPublicInfo | null
+  }) {
+    testState.authenticatedApi = options.signedIn ? authenticatedApi(options.signedInSees) : null
+    rootContainer = document.createElement('div')
+    document.body.appendChild(rootContainer)
+    root = createRoot(rootContainer)
+    await act(async () => root!.render(
+      <ServerConfigContext.Provider value={options.config}>
+        <BlueprintLandingPage rpcStub={publicApi(options.publicSees)} />
+      </ServerConfigContext.Provider>,
+    ))
+    await act(async () => { await Promise.resolve() })
+    return rootContainer.textContent ?? ''
+  }
+
+  it('reads through the visitor\'s own session when signed in, which the public read cannot match', async () => {
+    const text = await open({ signedIn: true, config: ORGANIZATIONS, signedInSees: BLUEPRINT, publicSees: null })
+    expect(text).toContain('Model blueprint')
+  })
+
+  it('says only to sign in to a signed-out visitor of a deployment with organizations', async () => {
+    const text = await open({ signedIn: false, config: ORGANIZATIONS, signedInSees: BLUEPRINT, publicSees: null })
+    expect(text).toContain('Sign in to continue')
+    expect(text).not.toContain('not found')
+  })
+
+  it('says a signed-in visitor\'s blueprint is not found when their organization cannot read it', async () => {
+    const text = await open({ signedIn: true, config: ORGANIZATIONS, signedInSees: null, publicSees: BLUEPRINT })
+    expect(text).toContain('Blueprint not found')
+  })
+
+  it('still says not found without organizations, where a missing blueprint is simply missing', async () => {
+    const text = await open({ signedIn: false, config: DEPLOYMENT, signedInSees: null, publicSees: null })
+    expect(text).toContain('Blueprint not found')
   })
 })

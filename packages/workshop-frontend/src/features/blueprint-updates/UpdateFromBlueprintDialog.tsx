@@ -8,7 +8,7 @@ import type {
   GadgetClient,
   GadgetUpstream,
   Overseer,
-  PublicApi,
+  AuthenticatedApi,
 } from '@gadgets/workshop-shared/api'
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from '../../components/WorkshopControls'
 import {
@@ -28,7 +28,7 @@ type UpdateFromBlueprintDialogProps = {
   /** The gadget to update. `upstream` is the blueprint it follows, which the dialog offers first. */
   gadget: { title: string; upstream?: GadgetUpstream; client: RpcStub<GadgetClient> }
   overseer: RpcStub<Overseer>
-  publicApi: RpcStub<PublicApi>
+  authenticatedApi: RpcStub<AuthenticatedApi>
   onClose: () => void
   /** Called with the new chat that holds the proposal, once there is one. */
   onProposed: (chatId: number) => void
@@ -97,7 +97,7 @@ const describeChoice = (choice: BlueprintChoice, status: string | null) => (
 export const UpdateFromBlueprintDialog = ({
   gadget,
   overseer,
-  publicApi,
+  authenticatedApi,
   onClose,
   onProposed,
 }: UpdateFromBlueprintDialogProps) => {
@@ -120,7 +120,7 @@ export const UpdateFromBlueprintDialog = ({
     let cancelled = false
     Promise.all([
       overseer.listModels(),
-      followedId === undefined ? null : publicApi.getBlueprint(followedId),
+      followedId === undefined ? null : authenticatedApi.getBlueprint(followedId),
     ]).then(([models, followed]) => {
       if (cancelled) return
       // The same choice a new chat's composer starts on, since a new chat is where this lands.
@@ -130,7 +130,7 @@ export const UpdateFromBlueprintDialog = ({
       if (!cancelled) setLoad({ status: 'failed' })
     })
     return () => { cancelled = true }
-  }, [overseer, publicApi, followedId, loadAttempt])
+  }, [overseer, authenticatedApi, followedId, loadAttempt])
 
   const retryLoad = () => {
     setLoad({ status: 'loading' })
@@ -146,7 +146,7 @@ export const UpdateFromBlueprintDialog = ({
       return
     }
     setReference({ text, lookup: { status: 'loading' } })
-    publicApi.getBlueprint(blueprintId).then(blueprint => {
+    authenticatedApi.getBlueprint(blueprintId).then(blueprint => {
       if (referenceRequest.current !== request) return
       setReference({
         text,

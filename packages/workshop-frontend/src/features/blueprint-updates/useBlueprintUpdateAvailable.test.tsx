@@ -9,7 +9,7 @@ import type {
   BlueprintMetadata,
   BlueprintPublicInfo,
   GadgetUpstream,
-  PublicApi,
+  AuthenticatedApi,
 } from '@gadgets/workshop-shared/api'
 import { hasNewerRelease, useBlueprintUpdateAvailable } from './useBlueprintUpdateAvailable'
 
@@ -62,13 +62,13 @@ describe('hasNewerRelease', () => {
 
 describe('useBlueprintUpdateAvailable', () => {
   const getBlueprint = vi.fn<(id: string) => Promise<BlueprintPublicInfo | null>>()
-  const publicApi = { getBlueprint } as unknown as RpcStub<PublicApi>
+  const authenticatedApi = { getBlueprint } as unknown as RpcStub<AuthenticatedApi>
 
   let container: HTMLDivElement
   let root: Root
 
   const Probe = ({ upstream }: { upstream?: GadgetUpstream }) => (
-    <>{useBlueprintUpdateAvailable(publicApi, upstream) ? 'update available' : 'no update'}</>
+    <>{useBlueprintUpdateAvailable(authenticatedApi, upstream) ? 'update available' : 'no update'}</>
   )
 
   const render = async (upstream?: GadgetUpstream) => {

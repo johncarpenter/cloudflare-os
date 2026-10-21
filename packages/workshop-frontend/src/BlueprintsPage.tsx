@@ -8,9 +8,10 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { BlueprintPublicInfo } from "@gadgets/workshop-shared/api";
 import { VendorDescription } from "@gadgets/workshop-shared/gatekeeper";
-import { useAuthenticatedApi } from "./AuthContext";
+import { useAuthenticatedApi, useOptionalAuthenticatedApi } from "./AuthContext";
 import { BindingBadge, uniqueBindingBadges } from "./components/BlueprintCard";
 import { BlueprintPreviewPlaceholder } from "./components/BlueprintPreviewImage";
+import { useBlueprintImage } from "./components/useBlueprintImage";
 import ViewToggle from "./components/ViewToggle";
 
 type VendorMap = Map<string, VendorDescription>;
@@ -151,11 +152,12 @@ export default function BlueprintsPage() {
 }
 
 function BlueprintThumbnail({ blueprint }: { blueprint: BlueprintPublicInfo }) {
+  const src = useBlueprintImage(blueprint, useOptionalAuthenticatedApi()?.authenticatedApi);
   return (
     <div className="relative aspect-[16/9] w-full overflow-hidden border-b border-kumo-line bg-kumo-tint">
-      {blueprint.screenshotUrl ? (
+      {src ? (
         <img
-          src={blueprint.screenshotUrl}
+          src={src}
           alt={`Screenshot of ${blueprint.metadata.title}`}
           className="h-full w-full object-cover"
           loading="lazy"

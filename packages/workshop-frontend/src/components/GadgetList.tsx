@@ -503,6 +503,7 @@ function HomeFeaturedBlueprintCard({
           blueprintId={blueprint.id}
           title={blueprint.metadata.title}
           screenshotUrl={blueprint.screenshotUrl}
+          hasScreenshot={blueprint.hasScreenshot}
           className="mb-3"
         />
         <div className="flex min-w-0 items-start gap-2 px-1 pb-1">

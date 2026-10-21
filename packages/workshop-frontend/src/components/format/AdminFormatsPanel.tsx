@@ -19,6 +19,7 @@ import type {
 import { OUTPUT_ICONS } from '@gadgets/workshop-shared/api'
 import type { RpcStub } from 'capnweb'
 import { useAuthenticatedApi } from '../../AuthContext'
+import { useServerConfig } from '../../ServerConfigContext'
 import { MENU_CONTENT } from '../menuStyles'
 import { FORMAT_ICONS, GENERIC_OUTPUT } from './formats'
 import { FormatGlyph, FormatPreview } from './FormatVisuals'
@@ -43,13 +44,19 @@ export default function AdminFormatsPanel({
 }) {
   const { authenticatedApi } = useAuthenticatedApi()
   const toasts = useKumoToastManager()
+  const organizations = useServerConfig()?.clerk !== undefined
   const [busy, setBusy] = useState(false)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [candidates, setCandidates] = useState<Promotable[]>([])
 
   useEffect(() => {
     let cancelled = false
-    Promise.all([authenticatedApi.listFeaturedBlueprints(), authenticatedApi.listOwnBlueprints()])
+    // With organizations only the deployment's bundled blueprints can be formats, and those are all
+    // featured; the admin's own belong to their organization and are refused.
+    Promise.all([
+      authenticatedApi.listFeaturedBlueprints(),
+      organizations ? [] : authenticatedApi.listOwnBlueprints(),
+    ])
       .then(([featured, own]) => {
         if (cancelled) return
         const byId = new Map<string, Promotable>()
@@ -65,7 +72,7 @@ export default function AdminFormatsPanel({
     return () => {
       cancelled = true
     }
-  }, [authenticatedApi])
+  }, [authenticatedApi, organizations])
 
   const promoted = useMemo(() => new Set(formats.map((f) => f.blueprintId)), [formats])
   const available = candidates.filter((c) => !promoted.has(c.id))

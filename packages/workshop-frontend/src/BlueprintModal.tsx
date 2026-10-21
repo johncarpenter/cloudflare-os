@@ -5,6 +5,8 @@ import { RpcStub } from 'capnweb'
 import { BlueprintGadgetSummary, GadgetClient, GadgetMetadata, Overseer, BlueprintBindingAnnotation, BlueprintScreenshotUpload } from '@gadgets/workshop-shared/api'
 import { WorkshopButton, WorkshopIconButton, WorkshopInput, WorkshopInputArea } from './components/WorkshopControls'
 import { copyToClipboard } from './clipboard'
+import { useOptionalAuthenticatedApi } from './AuthContext'
+import { useBlueprintImage } from './components/useBlueprintImage'
 import {
   BindingCardData,
   BlueprintBindingCard,
@@ -272,9 +274,11 @@ export default function BlueprintModal({ open, onClose, overseer, gadget, metada
     }
   }
 
-  const savedScreenshotUrl = formMode === 'edit' && editingBlueprint?.screenshotUrl && !clearScreenshot
-    ? editingBlueprint.screenshotUrl
-    : null
+  // The blueprint's current image: shown from its public address, or fetched when it has none.
+  const currentScreenshotUrl = useBlueprintImage(editingBlueprint, useOptionalAuthenticatedApi()?.authenticatedApi)
+  const hasSavedScreenshot = formMode === 'edit' && !clearScreenshot &&
+    (!!editingBlueprint?.screenshotUrl || editingBlueprint?.hasScreenshot === true)
+  const savedScreenshotUrl = hasSavedScreenshot ? currentScreenshotUrl ?? null : null
   const screenshotPreviewUrl = newScreenshotUrl ?? savedScreenshotUrl
 
   return (
@@ -341,11 +345,11 @@ export default function BlueprintModal({ open, onClose, overseer, gadget, metada
                           </p>
                           <p className="m-0 mt-0.5 text-[12px] leading-4 font-normal tracking-[-0.2px] text-kumo-subtle">
                             Optional image shown on Explore and the blueprint detail page.
-                            {formMode === 'edit' && !newScreenshotUrl && editingBlueprint?.screenshotUrl && !clearScreenshot ? ' The current screenshot will stay unless you upload a new one.' : ''}
+                            {hasSavedScreenshot && !newScreenshotUrl ? ' The current screenshot will stay unless you upload a new one.' : ''}
                           </p>
                         </div>
                         <div className="flex shrink-0 items-center gap-1.5">
-                          {(newScreenshotUrl || (formMode === 'edit' && editingBlueprint?.screenshotUrl && !clearScreenshot)) && (
+                          {(newScreenshotUrl || hasSavedScreenshot) && (
                             <WorkshopButton
                               className="!h-8"
                               onClick={() => {
@@ -367,7 +371,7 @@ export default function BlueprintModal({ open, onClose, overseer, gadget, metada
                             disabled={processingScreenshot || creating}
                           >
                             <ImageSquare size={13} weight="bold" />
-                            {processingScreenshot ? 'Processing...' : newScreenshotUrl || (formMode === 'edit' && editingBlueprint?.screenshotUrl && !clearScreenshot) ? 'Change' : 'Upload'}
+                            {processingScreenshot ? 'Processing...' : newScreenshotUrl || hasSavedScreenshot ? 'Change' : 'Upload'}
                           </WorkshopButton>
                         </div>
                       </div>

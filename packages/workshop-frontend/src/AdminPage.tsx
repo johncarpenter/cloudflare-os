@@ -10,6 +10,8 @@ import SiteLogo from './components/SiteLogo'
 import { useDocumentTitle } from './useDocumentTitle'
 import AdminFormatsPanel from './components/format/AdminFormatsPanel'
 import { AdminModelsPanel } from './features/ai-models/AdminModelsPanel'
+import AdminBrandingPanel from './branding/AdminBrandingPanel'
+import { useServerConfig } from './ServerConfigContext'
 
 // Preset accent colors offered in the Theme section ('' = default brand).
 const ACCENT_PRESETS: { label: string; value: string }[] = [
@@ -81,6 +83,10 @@ export default function AdminPage() {
   const [userSearchEnabled, setUserSearchEnabled] = useState(false)
   const [savingUserSearch, setSavingUserSearch] = useState(false)
 
+  // Whether organizations may brand themselves; only a deployment with organizations has any.
+  const [tenantBrandingEnabled, setTenantBrandingEnabled] = useState(true)
+  const hasOrganizations = useServerConfig()?.clerk !== undefined
+
   // Gatekeeper resource config, and the set of resource keys ("vendorId\u0000urlPattern") busy toggling.
   const [resourceVendors, setResourceVendors] = useState<AdminResourceVendor[]>([])
   const [resourceBusy, setResourceBusy] = useState<Set<string>>(new Set())
@@ -103,6 +109,7 @@ export default function AdminPage() {
   const applySettings = (view: Awaited<ReturnType<RpcStub<AdminApi>['getSettings']>>) => {
     setSignupsEnabled(view.signupsEnabled)
     setUserSearchEnabled(view.userSearchEnabled)
+    setTenantBrandingEnabled(view.tenantBrandingEnabled)
     setSavedSiteName(view.siteName)
     setSiteNameDraft(view.siteName)
     setSiteLogoUrl(view.siteLogo?.url ?? null)
@@ -434,6 +441,7 @@ export default function AdminPage() {
           { value: 'formats', label: 'Formats' },
           { value: 'models', label: 'Models' },
           { value: 'access', label: 'Access' },
+          ...(hasOrganizations ? [{ value: 'organizations', label: 'Organizations' }] : []),
         ]}
       />
 
@@ -443,6 +451,15 @@ export default function AdminPage() {
           admin={admin.api}
           formats={formats}
           onChanged={async () => { setFormats((await admin.api.getSettings()).formats) }}
+        />
+      )}
+
+      {/* Organization branding */}
+      {activeTab === 'organizations' && hasOrganizations && (
+        <AdminBrandingPanel
+          admin={admin.api}
+          enabled={tenantBrandingEnabled}
+          onEnabledChange={setTenantBrandingEnabled}
         />
       )}
 

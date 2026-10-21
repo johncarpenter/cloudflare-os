@@ -20,6 +20,8 @@ import ResourceConfiguratorHost from './ResourceConfiguratorHost'
 import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControls'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from './components/menuStyles'
 import { useDocumentTitle } from './useDocumentTitle'
+import { useServerConfig } from './ServerConfigContext'
+import { useBlueprintImage } from './components/useBlueprintImage'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
 import { useDialogSelectPortalContainer } from './useDialogSelectPortalContainer'
 import { openConnectWindow } from './connectHandoff'
@@ -62,6 +64,11 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
   useDocumentTitle(blueprint?.metadata.title)
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
+  // A signed-out visitor to a deployment with organizations gets this for every id that is not
+  // public, whether it exists or not: the answer must not tell them which ids are real.
+  const [signInRequired, setSignInRequired] = useState(false)
+  const screenshotSrc = useBlueprintImage(blueprint, authenticatedApi)
+  const organizations = useServerConfig()?.clerk !== undefined
   const [error, setError] = useState<string | null>(null)
 
   const [activeBindingName, setActiveBindingName] = useState<string | null>(null)
@@ -108,29 +115,34 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     () => new Map(vendors.map(v => [v.id.toLowerCase(), v])),
     [vendors],
   )
-  // Fetch blueprint metadata.
+  // Fetch blueprint metadata. A signed-in visitor reads through their own session, which is the
+  // only way to see a blueprint their organization published; everyone else reads the public ones.
   useEffect(() => {
+    if (authLoading) return
     if (!id) {
       setLoading(false)
       setNotFound(true)
       return
     }
+    let cancelled = false
     setLoading(true)
     setNotFound(false)
+    setSignInRequired(false)
     setError(null)
 
-    rpcStub.getBlueprint(id).then(result => {
-      if (result) {
-        setBlueprint(result)
-      } else {
-        setNotFound(true)
-      }
+    const read = authenticatedApi ? authenticatedApi.getBlueprint(id) : rpcStub.getBlueprint(id)
+    read.then(result => {
+      if (cancelled) return
+      setBlueprint(result)
+      if (!result && !authenticatedApi && organizations) setSignInRequired(true)
+      else if (!result) setNotFound(true)
     }).catch(err => {
-      setError(err.message || 'Failed to load blueprint.')
+      if (!cancelled) setError(err.message || 'Failed to load blueprint.')
     }).finally(() => {
-      setLoading(false)
+      if (!cancelled) setLoading(false)
     })
-  }, [id, rpcStub])
+    return () => { cancelled = true }
+  }, [id, rpcStub, authLoading, authenticatedApi, organizations])
 
   useEffect(() => {
     setActiveBindingName(null)
@@ -593,7 +605,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
 
     try {
       await saveStreamToFile(
-        () => rpcStub.downloadBlueprint(id),
+        () => (authenticatedApi ?? rpcStub).downloadBlueprint(id),
         makeBlueprintFilename(blueprint.metadata.title, blueprint.metadata.version),
         {
           description: 'Gadget Blueprint',
@@ -739,6 +751,17 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     return <BlueprintStatePage title="Loading blueprint..." loading />
   }
 
+  if (signInRequired) {
+    return (
+      <BlueprintStatePage
+        title="Sign in to continue"
+        message="Sign in to open this blueprint."
+        actionLabel="Sign in"
+        onAction={() => setShowLogin(true)}
+      />
+    )
+  }
+
   if (notFound) {
     return (
       <BlueprintStatePage
@@ -827,10 +850,10 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
           </div>
 
           <aside className="space-y-3 lg:w-[360px] lg:justify-self-end lg:pt-1">
-            {blueprint.screenshotUrl && (
+            {screenshotSrc && (
               <BlueprintScreenshotHero
                 title={meta.title}
-                screenshotUrl={blueprint.screenshotUrl}
+                screenshotUrl={screenshotSrc}
               />
             )}
             <div className="flex items-center gap-2">
