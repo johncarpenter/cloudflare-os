@@ -77,7 +77,7 @@ describe("completeText", () => {
     })).toBe("OK");
     expect(sent).toHaveLength(1);
     expect(sent[0]!.get("cf-aig-skip-cache")).toBe("true");
-    expect(JSON.parse(sent[0]!.get("cf-aig-metadata")!)).toStrictEqual({ user: "user-123" });
+    expect(JSON.parse(sent[0]!.get("cf-aig-metadata")!)).toStrictEqual({ client: "default", user: "user-123" });
     expect(sent[0]!.get("cf-aig-authorization")).toMatch(/^Bearer /);
   });
 
@@ -86,7 +86,7 @@ describe("completeText", () => {
     expect(await completeText(handle, { prompt: "hello" })).toBe("OK");
     expect(sent).toHaveLength(1);
     expect(sent[0]!.has("cf-aig-skip-cache")).toBe(false);
-    expect(JSON.parse(sent[0]!.get("cf-aig-metadata")!)).toStrictEqual({ user: "user-123" });
+    expect(JSON.parse(sent[0]!.get("cf-aig-metadata")!)).toStrictEqual({ client: "default", user: "user-123" });
     expect(sent[0]!.get("cf-aig-authorization")).toMatch(/^Bearer /);
   });
 

@@ -1036,7 +1036,7 @@ describe("AdminSettings.testGatewayProvider", () => {
     expect(url).toBe("https://workers-binding.ai/ai-gateway/gateways/platform-gateway/" +
         "workers-ai/v1/chat/completions");
     expect(JSON.parse(headers.get("cf-aig-metadata")!))
-        .toStrictEqual({ user: "admin@example.com" });
+        .toStrictEqual({ client: "default", user: "admin@example.com" });
     // Every test sends the same request, which a caching gateway must not answer itself.
     expect(headers.get("cf-aig-skip-cache")).toBe("true");
     expect(body.model).toBe(KIMI);
@@ -1265,7 +1265,7 @@ describe("AdminSettings.testGatewayModel", () => {
     expect(url).toBe("https://workers-binding.ai/ai-gateway/gateways/platform-gateway/" +
         "workers-ai/v1/chat/completions");
     expect(JSON.parse(headers.get("cf-aig-metadata")!))
-        .toStrictEqual({ user: "admin@example.com" });
+        .toStrictEqual({ client: "default", user: "admin@example.com" });
     // Every test of a model sends the same request, which a caching gateway must not answer
     // itself.
     expect(headers.get("cf-aig-skip-cache")).toBe("true");
@@ -1489,7 +1489,7 @@ describe("AdminSettings.testNewGatewayModel", () => {
       expect(url).toBe("https://workers-binding.ai/ai-gateway/gateways/platform-gateway/" +
           "workers-ai/v1/chat/completions");
       expect(JSON.parse(headers.get("cf-aig-metadata")!))
-          .toStrictEqual({ user: "admin@example.com" });
+          .toStrictEqual({ client: "default", user: "admin@example.com" });
       expect(headers.get("cf-aig-skip-cache")).toBe("true");
       expect(body.model).toBe(STATED.id);
       expect(body.messages).toEqual([{ role: "user", content: "Reply with OK." }]);

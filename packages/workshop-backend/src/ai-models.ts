@@ -33,8 +33,9 @@ import {
 } from "@gadgets/workshop-shared/api";
 import { traceChat } from "./agent-tracing.js";
 import {
-  AiGatewayConfig, getAiGatewayConfig, getGatewayModels, type AiGatewayLogRoute,
+  AiGatewayConfig, gatewayDefaultClient, getAiGatewayConfig, getGatewayModels, type AiGatewayLogRoute,
 } from "./ai-gateway.js";
+import { tenantOfProfileId, userIdOfProfileId } from "./tenant.js";
 import { completeText } from "./ai-invoke.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
 import { hasGpt56PromptCaching, splitSystemPrompt } from "./system-prompt-blocks.js";
@@ -51,14 +52,18 @@ import { hasGpt56PromptCaching, splitSystemPrompt } from "./system-prompt-blocks
 
 // Gadgets-owned attribution schema attached to AI Gateway requests.
 type GatewayMetadata = {
-  // Stable Gadgets user identifier for attribution.
+  // The client usage is attributed to: the user's tenant (an organization, or a personal tenant),
+  // or the deployment's default client for a user that belongs to none. First, so that no later
+  // entry can push it past the five AI Gateway saves.
+  client: string;
+  // Stable Gadgets user identifier for attribution, without the tenant.
   user: string;
   // Gadgets execution context, present when the call is associated with a gadget operation.
   source?: GatewayMetadataContext["source"];
   gadgetId?: string;
-  chatId?: number;
   // Distinguishes gadget-initiated model calls from interactive user calls.
   automated?: true;
+  chatId?: number;
 };
 
 type GatewayMetadataContext = {
@@ -121,14 +126,19 @@ export type ModelHandle = {
   lastResponse?: { status: number; aiGatewayLogId?: string };
 };
 
-function buildMetadata(initiator: AiChatAuthorInfo, context?: GatewayMetadataContext): GatewayMetadata {
-  const metadata: GatewayMetadata = { user: initiator.id };
+function buildMetadata(initiator: AiChatAuthorInfo, context: GatewayMetadataContext | undefined,
+                       defaultClient: string): GatewayMetadata {
+  const metadata: GatewayMetadata = {
+    client: tenantOfProfileId(initiator.id) || defaultClient,
+    user: userIdOfProfileId(initiator.id),
+  };
   if (context) {
     metadata.source = context.source;
     if (context.gadgetId) metadata.gadgetId = context.gadgetId;
-    if (context.chatId !== undefined) metadata.chatId = context.chatId;
   }
   if (initiator.type === "gadget") metadata.automated = true;
+  // Last, because AI Gateway saves only the first five entries and this is the one worth losing.
+  if (context?.chatId !== undefined) metadata.chatId = context.chatId;
   return metadata;
 }
 
@@ -575,7 +585,8 @@ export function getModel(env: Cloudflare.Env, config: AiModelConfig,
   // of whether a platform AI Gateway is configured, so connected users are always billed correctly.
   if (options.userGateway) {
     return getModelViaUserGateway(
-        config, buildMetadata(initiator, options.metadata), options.userGateway,
+        config, buildMetadata(initiator, options.metadata, gatewayDefaultClient(env)),
+        options.userGateway,
         options.sessionAffinity);
   }
 
@@ -661,7 +672,7 @@ function getModelViaGateway(
   initiator: AiChatAuthorInfo,
   options: ModelRoutingOptions,
 ): ModelHandle {
-  const metadata = buildMetadata(initiator, options.metadata);
+  const metadata = buildMetadata(initiator, options.metadata, gwConfig.defaultClient);
   const binding = gwConfig.bindingFor(config.provider);
   // No binding means either the provider can't ride one or the deployment has none; the second
   // case already required a token in the constructor, so this only fires for the first
@@ -898,7 +909,7 @@ export function getDecisionModel(env: Cloudflare.Env, config: AiModelConfig,
     return modelAt(workersAiAccountUrl(config),
         { apiKey: config.apiToken, headers: config.extraHeaders });
   }
-  const metadata = buildMetadata(initiator, metadataContext);
+  const metadata = buildMetadata(initiator, metadataContext, gwConfig.defaultClient);
   const binding = gwConfig.bindingFor(config.provider);
   if (binding) {
     // The gateway's passthrough refuses /run even with the binding's identity, so binding

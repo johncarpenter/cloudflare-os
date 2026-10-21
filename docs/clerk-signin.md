@@ -75,3 +75,9 @@ Clerk dashboard:
   browser session.
 
 Webhook failures return 500 so Svix retries; every step is idempotent.
+
+## AI usage per client
+
+Gateway requests carry a `client` metadata entry: the user's tenant, or `CF_AI_GATEWAY_DEFAULT_CLIENT`
+(default `default`) for users that belong to none, plus `user` as the Clerk user id alone. See
+`infra/terraform/README.md` for how to read it.

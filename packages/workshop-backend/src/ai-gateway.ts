@@ -68,6 +68,17 @@ export function gatewayRunConfig(
   };
 }
 
+/** The `client` label for gateway requests whose user belongs to no tenant, when none is configured. */
+export const DEFAULT_GATEWAY_CLIENT = "default";
+
+/**
+ * The client attributed to gateway requests whose user belongs to no tenant (accounts that predate
+ * tenants), from CF_AI_GATEWAY_DEFAULT_CLIENT, so that no request reaches the gateway unattributed.
+ */
+export function gatewayDefaultClient(env: Cloudflare.Env): string {
+  return env.CF_AI_GATEWAY_DEFAULT_CLIENT?.trim() || DEFAULT_GATEWAY_CLIENT;
+}
+
 export class AiGatewayConfig {
   readonly gateway: string;
   /**
@@ -94,6 +105,8 @@ export class AiGatewayConfig {
   readonly binding?: Ai;
   /** The providers CF_AI_GATEWAY_PROVIDERS lists, which an admin can add to (see GatewayModels). */
   readonly providers: Set<string>;
+  /** The `client` attributed to gateway requests whose user belongs to no tenant. */
+  readonly defaultClient: string;
 
   constructor(env: Cloudflare.Env) {
     this.gateway = env.CF_AI_GATEWAY!;
@@ -119,6 +132,7 @@ export class AiGatewayConfig {
           "with --use-workers-ai-binding) or set CF_AI_GATEWAY_API_TOKEN (a Run + Read token).");
     }
     this.sameAccountGateway = this.binding ? this.gateway : undefined;
+    this.defaultClient = gatewayDefaultClient(env);
     this.providers = new Set(
       (env.CF_AI_GATEWAY_PROVIDERS || "").split(",").map(s => s.trim()).filter(s => s !== "")
     );

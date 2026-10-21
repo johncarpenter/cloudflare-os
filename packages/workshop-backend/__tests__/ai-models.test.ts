@@ -7,6 +7,7 @@ import { Type, type ClassifierContext } from "@earendil-works/pi-ai";
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models";
 import { OPENAI_MODELS } from "@earendil-works/pi-ai/providers/openai.models";
 import { serializeAdminConfig } from "../src/admin-config.js";
+import { makeUserKey, personalTenantId } from "../src/tenant.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig } from "../src/storage-schema/admin-settings-storage.js";
 import {
   DecisionModelGatekeeper, gatewayBuiltInReasoning, gatewayReasoningLevels, getDecisionModel,
@@ -114,6 +115,7 @@ describe("getModel AI Gateway routing", () => {
     expect(request.headers.get("x-api-key")).toBeNull();
     expect(request.headers.get("authorization")).toBeNull();
     expect(JSON.parse(request.headers.get("cf-aig-metadata")!)).toEqual({
+      client: "default",
       user: "user-123",
       source: "chat",
       gadgetId: "gadget-123",
@@ -150,6 +152,7 @@ describe("getModel AI Gateway routing", () => {
 
     const request = await captureRequest(handle);
     expect(JSON.parse(request.headers.get("cf-aig-metadata")!)).toEqual({
+      client: "default",
       user: "owner-456",
       source: "thread-title",
       gadgetId: "gadget-456",
@@ -157,6 +160,49 @@ describe("getModel AI Gateway routing", () => {
       automated: true,
     });
   }, 15000);
+
+  describe("client attribution", () => {
+    // One request per call: captureRequest reads the first one captured.
+    const metadataOf = async (handle: ModelHandle) => {
+      capturedRequests.length = 0;
+      return JSON.parse((await captureRequest(handle)).headers.get("cf-aig-metadata")!) as
+          Record<string, unknown>;
+    };
+
+    it("attributes a tenant's users to their tenant, with the user id alone", async () => {
+      const member = { ...INITIATOR, id: makeUserKey("org_acme", "user_1") };
+      const metadata = await metadataOf(getModel(env(), ANTHROPIC_CONFIG, member));
+      expect(metadata).toEqual({ client: "org_acme", user: "user_1" });
+      // The tenant separator never reaches the gateway, whose log filters match whole values.
+      expect(JSON.stringify(metadata)).not.toContain("\\u0000");
+
+      const personal = { ...INITIATOR, id: makeUserKey(personalTenantId("user_2"), "user_2") };
+      expect(await metadataOf(getModel(env(), ANTHROPIC_CONFIG, personal)))
+          .toEqual({ client: "u_user_2", user: "user_2" });
+    });
+
+    it("attributes users of no tenant to the default client, configurable per deployment", async () => {
+      expect((await metadataOf(getModel(env(), ANTHROPIC_CONFIG, INITIATOR))).client).toBe("default");
+
+      const configured = env({ CF_AI_GATEWAY_DEFAULT_CLIENT: " legacy-accounts " });
+      expect((await metadataOf(getModel(configured, ANTHROPIC_CONFIG, INITIATOR))).client)
+          .toBe("legacy-accounts");
+
+      // A tenant's own users are never relabelled by it.
+      const member = { ...INITIATOR, id: makeUserKey("org_acme", "user_1") };
+      expect((await metadataOf(getModel(configured, ANTHROPIC_CONFIG, member))).client).toBe("org_acme");
+    });
+
+    it("keeps the client inside the five entries AI Gateway saves, losing the chat first", async () => {
+      // A gadget call carries every entry there is: six, one more than the gateway keeps.
+      const gadget = { ...GADGET_INITIATOR, id: makeUserKey("org_acme", "owner") };
+      const metadata = await metadataOf(getModel(env(), ANTHROPIC_CONFIG, gadget, {
+        metadata: { source: "thread-title", gadgetId: "gadget-456", chatId: 8 },
+      }));
+      expect(Object.keys(metadata)).toEqual(
+          ["client", "user", "source", "gadgetId", "automated", "chatId"]);
+    });
+  });
 
   it("requires the gateway account id whenever gateway mode is enabled", () => {
     expect(() => getModel(env({ CF_AI_GATEWAY_ACCOUNT_ID: undefined }), ANTHROPIC_CONFIG,
@@ -194,6 +240,7 @@ describe("getModel AI Gateway routing", () => {
         "chat/completions");
     expect(request.headers.get("cf-aig-authorization")).toBe("Bearer user-token");
     expect(JSON.parse(request.headers.get("cf-aig-metadata")!)).toEqual({
+      client: "default",
       user: "user-123",
       source: "chat",
       gadgetId: "gadget-789",
@@ -339,6 +386,7 @@ describe("getModel AI Gateway binding transport", () => {
     expect(headerNames).not.toContain("x-api-key");
     expect(headerNames).not.toContain("authorization");
     expect(JSON.parse(entry.headers["cf-aig-metadata"])).toEqual({
+      client: "default",
       user: "user-123",
       source: "chat",
       gadgetId: "gadget-123",
@@ -1763,7 +1811,7 @@ describe("getDecisionModel routing", () => {
   const ANSWERS = { refund: { type: "bool", probability: 0.9 } };
   const METADATA_CONTEXT = { source: "model-binding" as const, gadgetId: "gadget-789" };
   const GATEWAY_METADATA = {
-    user: "owner-456", source: "model-binding", gadgetId: "gadget-789", automated: true,
+    client: "default", user: "owner-456", source: "model-binding", gadgetId: "gadget-789", automated: true,
   };
 
   // pi's classify() takes no fetch from getDecisionModel on HTTP routes, so it uses the global one.
