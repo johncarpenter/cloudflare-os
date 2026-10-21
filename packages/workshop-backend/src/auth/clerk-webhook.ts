@@ -1,7 +1,9 @@
 // The Clerk webhook (`POST /api/clerk-webhook`): Clerk delivers events through Svix, which signs
-// each delivery. Membership removal and account deletion are applied here at once; the 30 second
-// session renewal (AuthenticatedApi.renewSession) is the backstop if a delivery is late.
+// each delivery. Membership removal, account deletion and organization deletion are applied here at
+// once; the 30 second session renewal (AuthenticatedApi.renewSession) is the backstop if a delivery
+// is late.
 
+import type { UserDirectoryDurableObject } from "../user-directory.js";
 import type { UserDurableObject } from "../user.js";
 import { createWorkshopLogger } from "../observability";
 import { makeUserKey, personalTenantId } from "../tenant.js";
@@ -59,9 +61,15 @@ function asId(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+/** The Durable Objects a Clerk event acts on. */
+export type ClerkEventStores = {
+  users: DurableObjectNamespace<UserDurableObject>;
+  directories: DurableObjectNamespace<UserDirectoryDurableObject>;
+};
+
 /** Applies one verified Clerk event. Idempotent, so a retried delivery is harmless. */
 export async function applyClerkEvent(
-    event: unknown, users: DurableObjectNamespace<UserDurableObject>, now = Date.now())
+    event: unknown, { users, directories }: ClerkEventStores, now = Date.now())
     : Promise<void> {
   const envelope = asRecord(event);
   const data = asRecord(envelope?.data);
@@ -79,17 +87,23 @@ export async function applyClerkEvent(
   } else if (envelope.type === "user.deleted") {
     const userId = asId(data.id);
     if (!userId) return;
-    await users.getByName(makeUserKey(personalTenantId(userId), userId)).eraseAccount();
+    await users.getByName(makeUserKey(personalTenantId(userId), userId)).eraseAccount(at);
     logger.info("account erased", {
       event: "clerk.account.erased", tenantId: personalTenantId(userId), userId,
     });
+  } else if (envelope.type === "organization.deleted") {
+    // The organization no longer exists, so nobody is left to keep its content for: every member's
+    // data in this tenant goes, found through the tenant's directory.
+    const orgId = asId(data.id);
+    if (!orgId) return;
+    await directories.getByName(orgId).eraseTenant(at);
+    logger.info("tenant erased", { event: "clerk.tenant.erased", tenantId: orgId });
   }
 }
 
 /** Serves `POST /api/clerk-webhook`. */
 export async function handleClerkWebhook(
-    req: Request, env: Cloudflare.Env, users: DurableObjectNamespace<UserDurableObject>)
-    : Promise<Response> {
+    req: Request, env: Cloudflare.Env, stores: ClerkEventStores): Promise<Response> {
   if (!isClerkEnabled(env) || !env.CLERK_WEBHOOK_SECRET) {
     return new Response("Not Found", { status: 404 });
   }
@@ -107,7 +121,7 @@ export async function handleClerkWebhook(
     return new Response("Invalid body.", { status: 400 });
   }
   try {
-    await applyClerkEvent(event, users);
+    await applyClerkEvent(event, stores);
   } catch (error) {
     // Svix retries a non-2xx delivery, and every step is idempotent.
     logger.error("failed to apply clerk event", { event: "clerk.webhook.failed", error });

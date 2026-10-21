@@ -56,8 +56,8 @@ Clerk dashboard:
 1. Enable Organizations, with personal accounts allowed.
 2. Customize the session token: `{ "name": "{{user.full_name}}", "email": "{{user.primary_email_address}}" }`
    (optional; display only, never used for decisions).
-3. Add a webhook endpoint `https://<deployment>/api/clerk-webhook` for `organizationMembership.deleted`
-   and `user.deleted`.
+3. Add a webhook endpoint `https://<deployment>/api/clerk-webhook` for `organizationMembership.deleted`,
+   `user.deleted` and `organization.deleted`.
 
 ## Lifecycle
 
@@ -66,6 +66,11 @@ Clerk dashboard:
   Organization-admin view and reassignment of that content is not built yet.
 - **Account deleted** (webhook): the personal tenant is erased (credentials revoked, owned workspaces
   deleted, directory entry removed, storage dropped) and every organization membership is ended.
+- **Organization deleted** (webhook): every member of the tenant is erased the same way (workspaces,
+  published blueprints, credentials, storage), found through the tenant's user directory, and each
+  keeps only a membership end so a session token issued before the deletion cannot recreate them.
+  Members whose sign-in never reached the directory are not found. The shared legacy directory is
+  never erased.
 - **Last-used workspace**: remembered per account in the personal-tenant record and restored once per
   browser session.
 

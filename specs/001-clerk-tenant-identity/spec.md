@@ -157,6 +157,7 @@ A signed-in user can see which workspace is active, switch between their persona
 **Account deletion**
 
 - **FR-013b**: When a user's account is deleted at the identity provider, the system MUST erase that user's personal tenant and revoke their connected-account credentials everywhere, and MUST treat their organization memberships as ended per FR-013a. The erasure MUST be audited per FR-021.
+- **FR-013c**: When an organization is deleted at the identity provider, the system MUST erase every member's data in that tenant (workspaces, published blueprints, connected-account credentials, directory entries) and MUST NOT let a session issued before the deletion recreate any of it. Other tenants MUST be untouched. Members whose sign-in never reached the tenant's directory cannot be found and are not erased.
 
 **Sharing and connected accounts**
 

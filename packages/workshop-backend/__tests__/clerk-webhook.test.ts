@@ -1,14 +1,19 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import { applyClerkEvent, handleClerkWebhook, verifySvixSignature } from "../src/auth/clerk-webhook.js";
+import type { UserDirectoryDurableObject } from "../src/user-directory.js";
 import type { UserDurableObject } from "../src/user.js";
 import { makeUserKey, personalTenantId } from "../src/tenant.js";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
     TEST_USER: DurableObjectNamespace<UserDurableObject>;
+    TEST_USER_DIRECTORY: DurableObjectNamespace<UserDirectoryDurableObject>;
   }
 }
+
+// What an event acts on: the same namespaces the Worker reaches through `ctx.exports`.
+const STORES = { users: env.TEST_USER, directories: env.TEST_USER_DIRECTORY };
 
 const SECRET_BYTES = new Uint8Array(32).map((_, i) => i + 1);
 const SECRET = `whsec_${SECRET_BYTES.toBase64()}`;
@@ -71,7 +76,7 @@ describe("handleClerkWebhook", () => {
   const post = async (hdrs: Headers, body: string, e = clerkEnv) =>
       (await handleClerkWebhook(
           new Request("https://workshop.example/api/clerk-webhook", { method: "POST", headers: hdrs, body }),
-          e, env.TEST_USER)).status;
+          e, STORES)).status;
 
   it("is absent unless Clerk and a secret are configured", async () => {
     expect(await post(new Headers(), BODY, env as unknown as Cloudflare.Env)).toBe(404);
@@ -98,7 +103,7 @@ describe("applyClerkEvent", () => {
       type: "organizationMembership.deleted",
       timestamp: 5_000,
       data: { organization: { id: "org_hook" }, public_user_data: { user_id: "user_hook" } },
-    }, env.TEST_USER);
+    }, STORES);
 
     expect(await refused(user.checkClerkSession(5_000))).toBe(true);
     expect(await refused(user.checkClerkSession(4_000))).toBe(true);
@@ -111,7 +116,7 @@ describe("applyClerkEvent", () => {
       type: "organizationMembership.deleted",
       timestamp: 5_000,
       data: { organization: { id: "org_hook" }, public_user_data: { user_id: "user_hook" } },
-    }, env.TEST_USER);
+    }, STORES);
     expect(await refused(user.checkClerkSession(6_000))).toBe(false);
   });
 
@@ -125,7 +130,7 @@ describe("applyClerkEvent", () => {
     const org = env.TEST_USER.getByName(orgKey);
     await org.authenticateFromClerk({ userKey: orgKey, displayName: "G", allowCreate: true, tokenIssuedAt: 1_000 });
 
-    await applyClerkEvent({ type: "user.deleted", data: { id: "user_gone" } }, env.TEST_USER, 10_000);
+    await applyClerkEvent({ type: "user.deleted", data: { id: "user_gone" } }, STORES, 10_000);
 
     expect(await env.TEST_USER.getByName(personalKey).whoamiIfExists()).toBeNull();
     expect(await refused(org.checkClerkSession(9_000))).toBe(true);
@@ -133,8 +138,8 @@ describe("applyClerkEvent", () => {
   });
 
   it("ignores events it does not handle and malformed payloads", async () => {
-    await expect(applyClerkEvent({ type: "session.created", data: {} }, env.TEST_USER)).resolves.toBeUndefined();
-    await expect(applyClerkEvent("nope", env.TEST_USER)).resolves.toBeUndefined();
-    await expect(applyClerkEvent({ type: "user.deleted", data: {} }, env.TEST_USER)).resolves.toBeUndefined();
+    await expect(applyClerkEvent({ type: "session.created", data: {} }, STORES)).resolves.toBeUndefined();
+    await expect(applyClerkEvent("nope", STORES)).resolves.toBeUndefined();
+    await expect(applyClerkEvent({ type: "user.deleted", data: {} }, STORES)).resolves.toBeUndefined();
   });
 });

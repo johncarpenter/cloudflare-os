@@ -44,7 +44,8 @@ existing one, so no data migrates. Search never crosses tenants.
 created --webhook membership.deleted--> membershipEndedAt = t
    t-or-earlier token --> refused ; later token --> allowed (re-added member)
 personal DO --webhook user.deleted--> erased (all storage deleted, credentials revoked first)
-org user DO --webhook user.deleted / membership.deleted--> membershipEndedAt = t, credentials revoked, content kept
+org user DO --webhook membership.deleted--> membershipEndedAt = t, credentials revoked, content kept
+org user DO --webhook organization.deleted--> erased (workspaces, blueprints, credentials, storage), membershipEndedAt = t kept as a tombstone
 ```
 
 ## Session liveness (in-memory, per RPC connection)

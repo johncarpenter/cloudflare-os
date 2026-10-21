@@ -338,12 +338,17 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Erases a deleted Clerk user's personal tenant: revokes their credentials, ends their
-   * memberships of the organizations they signed in to, deletes the workspaces they own, removes
-   * them from the directory, and drops all of this DO's storage. Organization content they
-   * created stays with the organization. Called only for the personal-tenant DO.
+   * Erases this user's data: revokes their credentials, ends their memberships of the
+   * organizations they signed in to, deletes the workspaces they own and the blueprints they
+   * published (a blueprint link would otherwise keep serving their source), removes them from the
+   * directory, and drops all of this DO's storage. Used for a deleted Clerk user (their personal
+   * tenant; organization content they created stays with the organization) and, member by member,
+   * for a deleted organization (see `UserDirectoryDurableObject.eraseTenant`).
+   *
+   * `tombstoneAt` leaves behind only a membership end at that time, so a session token issued
+   * before it cannot recreate the account, which first-use sign-in would otherwise do.
    */
-  async eraseAccount(): Promise<void> {
+  async eraseAccount(tombstoneAt?: number): Promise<void> {
     const userKey = this.ctx.id.name;
     if (!userKey) throw new Error("Only a named user can be erased.");
     const userId = userIdOfProfileId(userKey);
@@ -353,11 +358,19 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     const now = Date.now();
     const ownerId = this.ctx.id.toString();
     const owned = Array.from(this.storage.gadgets.list()).filter(gadget => !gadget.owner);
+    // Published blueprints, and the ones this user uploaded to their library (others in the library
+    // are references to someone else's).
+    const blueprintIds = new Set([
+      ...Array.from(this.storage.blueprints.list()).map(record => record.id),
+      ...Array.from(this.storage.libraryBlueprints.list())
+          .filter(record => record.uploaded).map(record => record.id),
+    ]);
     const outcomes = await Promise.allSettled([
       ...this.storage.knownTenants.get().map(tenantId =>
           exports.UserDurableObject.getByName(makeUserKey(tenantId, userId)).endMembership(now)),
       ...owned.map(gadget => exports.OverseerDurableObject
           .get(exports.OverseerDurableObject.idFromString(gadget.id)).eraseOwnedWorkspace(ownerId)),
+      ...[...blueprintIds].map(id => this.deleteOwnedBlueprint(id)),
       exports.UserDirectoryDurableObject.getByName(tenantOfProfileId(userKey)).removeUser(userKey),
     ]);
     // A step that fails leaves data behind, so fail the call: the webhook retries and every step
@@ -367,6 +380,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
+    if (tombstoneAt !== undefined) this.storage.membershipEndedAt.put(tombstoneAt);
   }
 
   /** Records an organization tenant this (personal-tenant) user signed in to. */

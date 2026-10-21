@@ -1028,7 +1028,10 @@ export default {
     }
 
     if (url.pathname === "/api/clerk-webhook") {
-      return handleClerkWebhook(req, env, ctx.exports.UserDurableObject);
+      return handleClerkWebhook(req, env, {
+        users: ctx.exports.UserDurableObject,
+        directories: ctx.exports.UserDirectoryDurableObject,
+      });
     }
 
     if (url.pathname === "/api/device-session/callback") {

@@ -1,4 +1,4 @@
-import { createExecutionContext } from "cloudflare:test";
+import { createExecutionContext, runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { newWebSocketRpcSession, type RpcStub } from "capnweb";
 import { exportJWK, generateKeyPair, SignJWT, type JWK, type KeyLike } from "jose";
@@ -291,5 +291,100 @@ describe("remembered workspace and operators", () => {
     using orgAdmin = await signIn(publicApi, { sub: fresh("user"), org: fresh("org") });
     expect(await orgAdmin.amIAdmin()).toBe(false);
     expect(await orgAdmin.getAdminApi()).toBeNull();
+  });
+});
+
+describe("organization deletion", () => {
+  const SECRET_BYTES = new Uint8Array(32).map((_, i) => i + 7);
+  const WEBHOOK_SECRET = `whsec_${SECRET_BYTES.toBase64()}`;
+
+  // Delivers an event the way Svix does: signed over id, timestamp and body.
+  async function deliver(event: unknown): Promise<number> {
+    const body = JSON.stringify(event);
+    const id = `msg_${crypto.randomUUID()}`;
+    const timestamp = Math.floor(Date.now() / 1000);
+    const key = await crypto.subtle.importKey(
+        "raw", SECRET_BYTES, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const mac = await crypto.subtle.sign(
+        "HMAC", key, new TextEncoder().encode(`${id}.${timestamp}.${body}`));
+    const response = await server.fetch(new Request("https://workshop.invalid/api/clerk-webhook", {
+      method: "POST",
+      headers: {
+        "svix-id": id, "svix-timestamp": String(timestamp),
+        "svix-signature": `v1,${new Uint8Array(mac).toBase64()}`,
+      },
+      body,
+    }), { ...env, ...CLERK, CLERK_WEBHOOK_SECRET: WEBHOOK_SECRET } as typeof env,
+    createExecutionContext());
+    return response.status;
+  }
+
+  it("erases every member's data, workspaces and published blueprints, and nothing of another tenant",
+      async () => {
+    using publicApi = await connect();
+    const dead = fresh("org");
+    const kept = fresh("org");
+    const subA = fresh("ann");
+    const subB = fresh("bob");
+    using ann = await signIn(publicApi, { sub: subA, org: dead });
+    using _bob = await signIn(publicApi, { sub: subB, org: dead });
+    using cat = await signIn(publicApi, { sub: fresh("cat"), org: kept });
+    const keyA = makeUserKey(dead, subA);
+    const keyB = makeUserKey(dead, subB);
+
+    using workspace = await ann.newGadget();
+    const workspaceId = (await workspace.getMetadata()).id;
+
+    // A blueprint Ann published: its record, its link, and its stored content.
+    const blueprintId = crypto.randomUUID().replaceAll("-", "");
+    const userA = exports.UserDurableObject.getByName(keyA);
+    const metadata = { title: "T", description: "", created: new Date(), lastUpdated: new Date() };
+    await runInDurableObject(userA, async (instance: any, state) => {
+      instance.storage.blueprints.put({ id: blueprintId, metadata, gadgetId: "1" });
+      await env.BLUEPRINTS.put(
+          blueprintId, JSON.stringify({ metadata, ownerId: state.id.toString(), gadgetId: "1" }));
+    });
+    await env.BLUEPRINT_CONTENT.put(`${blueprintId}/release`, "source");
+
+    // The directory learns of members as they sign in; the erase finds them there.
+    await expect.poll(() => exports.UserDirectoryDurableObject.getByName(dead).listUserIds())
+        .toEqual([keyA, keyB].toSorted());
+
+    const staleToken = await mint({ sub: subA, org: dead });
+    expect(await deliver({
+      type: "organization.deleted", timestamp: Date.now(), data: { id: dead, deleted: true },
+    })).toBe(204);
+
+    // Members, their directory, workspaces and published blueprint are gone.
+    expect(await userA.whoamiIfExists()).toBeNull();
+    expect(await exports.UserDurableObject.getByName(keyB).whoamiIfExists()).toBeNull();
+    expect(await exports.UserDirectoryDurableObject.getByName(dead).listUserIds()).toEqual([]);
+    expect(await env.BLUEPRINTS.get(blueprintId)).toBeNull();
+    expect(await env.BLUEPRINT_CONTENT.get(`${blueprintId}/release`)).toBeNull();
+    const remaining = await runInDurableObject(
+        exports.OverseerDurableObject.get(exports.OverseerDurableObject.idFromString(workspaceId)),
+        async (_instance, state) => (await state.storage.list()).size);
+    expect(remaining).toBe(0);
+
+    // A session token issued before the deletion cannot bring a member back.
+    using fresh1 = await connect();
+    expect(getAuthErrorCode(await failure(fresh1.authenticateFromClerk(staleToken))))
+        .toBe(AUTH_ERROR_CODES.sessionNotPermitted);
+    expect(await userA.whoamiIfExists()).toBeNull();
+
+    // Another organization is untouched.
+    expect((await cat.whoami()).type).toBe("user");
+    expect(await exports.UserDirectoryDurableObject.getByName(kept).listUserIds()).toHaveLength(1);
+
+    // A redelivery changes nothing.
+    expect(await deliver({
+      type: "organization.deleted", timestamp: Date.now(), data: { id: dead, deleted: true },
+    })).toBe(204);
+  });
+
+  it("never erases the legacy directory, which belongs to every account that predates tenants",
+      async () => {
+    const error = await failure(exports.UserDirectoryDurableObject.getByName("").eraseTenant(Date.now()));
+    expect(error.message).toMatch(/named tenant/);
   });
 });

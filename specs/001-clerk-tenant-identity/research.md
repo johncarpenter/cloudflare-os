@@ -77,7 +77,8 @@ resolved by reading the repository and Clerk's documented token format.
   `svix-signature`; HMAC-SHA256 over `id.timestamp.body` using the base64 part of `whsec_...`;
   5 minute tolerance; constant-time compare). No `svix` dependency.
 - **Events**: `organizationMembership.deleted` → end membership + revoke credentials;
-  `user.deleted` → erase personal tenant + end every recorded org membership.
+  `user.deleted` → erase personal tenant + end every recorded org membership;
+  `organization.deleted` → erase every member of the tenant, found through the tenant's directory.
 
 ## R7. Single-tenant (dedicated) mode
 

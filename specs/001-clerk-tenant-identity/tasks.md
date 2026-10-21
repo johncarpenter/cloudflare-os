@@ -100,3 +100,7 @@
 - [x] T038 `user.deleted` erasure (`UserDurableObject.eraseAccount`: revoke accounts, end memberships in `knownTenants`, delete all storage) with test in `clerk-webhook.test.ts`
 - [x] T039 [P] Docs: `docs/clerk-signin.md` (setup, env vars, tenancy model) and a pointer from `AGENTS.md` architecture notes
 - [x] T040 Run lint, build, backend and frontend tests; fix fallout. Quickstart manual steps 2-8 need a live Clerk instance and were not walked; the same behaviours are covered by the integration tests (no browser run against Clerk was possible)
+
+## Addendum: organization deletion
+
+- [x] T041 Handle `organization.deleted`: `UserDirectoryDurableObject.eraseTenant` erases every member listed in the tenant's directory (`UserDurableObject.eraseAccount(tombstoneAt)`), `eraseAccount` also deletes published blueprints (fixing the same leak for `user.deleted`) and leaves a membership-end tombstone; `applyClerkEvent` takes `{ users, directories }`; covered end to end in `__integration__/clerk-rpc.test.ts` ("organization deletion"). Docs and the Terraform output list the new event.

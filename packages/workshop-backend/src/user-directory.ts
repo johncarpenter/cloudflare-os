@@ -5,6 +5,8 @@ const SEARCH_RESULT_LIMIT = 10;
 // Every authenticated user can reach this one DO, so a search bounds what it is asked to scan.
 const MAX_QUERY_LENGTH = 1000;
 const MAX_EXCLUDE_IDS = 1000;
+// How many members of an erased tenant are erased at once.
+const ERASE_BATCH = 10;
 
 /**
  * Deployment-wide directory of user profiles, so a user can find collaborators
@@ -39,6 +41,35 @@ export class UserDirectoryDurableObject extends DurableObject<Cloudflare.Env> {
   /** Removes one user's record, for an erased account. Idempotent. */
   removeUser(id: string): void {
     this.ctx.storage.sql.exec(`DELETE FROM users WHERE id = ?`, id);
+  }
+
+  /** The ids of every user recorded in this directory. */
+  listUserIds(): string[] {
+    return this.ctx.storage.sql.exec<{ id: string }>(`SELECT id FROM users ORDER BY id`)
+        .toArray().map(row => row.id);
+  }
+
+  /**
+   * Erases the tenant this directory belongs to (the Durable Object is named by the tenant id):
+   * every user recorded here is erased (see `UserDurableObject.eraseAccount`), leaving each only a
+   * membership end at `endedAt`, and then the directory is emptied. Members are found here, so one
+   * whose sign-in never reached the directory is not. A failure leaves the directory as it was and
+   * throws, so a retry finds the same members; every step is idempotent.
+   *
+   * Refused on the legacy directory (named ""), which belongs to every account that predates
+   * tenants and is not a tenant to erase.
+   */
+  async eraseTenant(endedAt: number): Promise<void> {
+    if (!this.ctx.id.name) throw new Error("Only a named tenant can be erased.");
+    const users = this.ctx.exports.UserDurableObject;
+    const ids = this.listUserIds();
+    for (let start = 0; start < ids.length; start += ERASE_BATCH) {
+      const outcomes = await Promise.allSettled(
+          ids.slice(start, start + ERASE_BATCH).map(id => users.getByName(id).eraseAccount(endedAt)));
+      const failure = outcomes.find(outcome => outcome.status === "rejected");
+      if (failure) throw failure.reason;
+    }
+    this.ctx.storage.sql.exec(`DELETE FROM users`);
   }
 
   /**

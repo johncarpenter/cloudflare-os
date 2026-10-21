@@ -20,6 +20,6 @@ Auth and tenancy configuration is environment-driven and MUST NOT move into `Adm
 2. Session token template (Sessions → Customize session token):
    `{ "name": "{{user.full_name}}", "email": "{{user.primary_email_address}}" }` (optional; used for display).
 3. Webhooks → add endpoint `https://<deployment>/api/clerk-webhook`, events
-   `organizationMembership.deleted` and `user.deleted`; copy the signing secret to
+   `organizationMembership.deleted`, `user.deleted` and `organization.deleted`; copy the signing secret to
    `CLERK_WEBHOOK_SECRET`.
 4. Add the deployment origin to the allowed origins.
