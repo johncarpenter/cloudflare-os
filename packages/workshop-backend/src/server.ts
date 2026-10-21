@@ -1,7 +1,7 @@
 import { RpcStub, RpcTarget, newHttpBatchRpcResponse, newWebSocketRpcSession, RpcSessionOptions } from "capnweb";
 import { validateRpc } from "capnweb-validate";
 import type { JWTPayload } from "jose";
-import { PublicApi, AuthenticatedApi, Overseer, GadgetMetadataWithTimestamps, AiChatAuthorInfo, RedactedAiModelConfig, AiGatewayInfo, AiModelProvider, ModelKind, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, UserDirectoryRecord, createOpenGadgetError, getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, NotificationSubscriber } from '@gadgets/workshop-shared/api';
+import { EffectiveBranding, TenantAdminApi, PublicApi, AuthenticatedApi, Overseer, GadgetMetadataWithTimestamps, AiChatAuthorInfo, RedactedAiModelConfig, AiGatewayInfo, AiModelProvider, ModelKind, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, UserDirectoryRecord, createOpenGadgetError, getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, NotificationSubscriber } from '@gadgets/workshop-shared/api';
 import type { UiFeatureFlags } from "@gadgets/workshop-shared/feature-flags";
 import { getServerConfig } from "./deployment-config.js";
 import { isPasswordAuthEnabled, getAuthGatekeeperAllowlist } from "./auth/config.js";
@@ -19,7 +19,7 @@ import { DecisionModelGatekeeper, LanguageModelGatekeeper } from "./ai-models";
 import { getGatewayModels } from "./ai-gateway.js";
 import { AdminSettings, AdminApiImpl } from "./admin-settings.js";
 import { blueprintContentKey, buildBlueprintArchiveStream, sanitizeBlueprintOutput, parseBlueprintArchive, randomBlueprintId } from "./blueprint-archive.js";
-import { BlueprintKvRecord, listFeaturedBlueprintsFromKv, readBlueprintKvRecord } from "./storage-schema/blueprints-kv.js";
+import { BlueprintKvRecord, listFeaturedBlueprintsFromKv } from "./storage-schema/blueprints-kv.js";
 import { GatekeeperConnectCallbackImpl, normalizeUsername, UserDurableObject, CLOUDFLARE_VENDOR_ID } from "./user";
 import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentSpawnerGatekeeper, GatekeeperHookLoopback, GadgetTailLoopback, AgentSelfLoopback } from "./overseer";
 import { UserDirectoryDurableObject } from "./user-directory.js";
@@ -36,8 +36,13 @@ import { deviceSessionCallback } from "./auth/device-session-callback.js";
 import { isClerkEnabled } from "./auth/config.js";
 import { verifyClerkSessionToken, type ClerkClaims } from "./auth/clerk.js";
 import { handleClerkWebhook } from "./auth/clerk-webhook.js";
-import { makeUserKey, personalTenantId, resolveTenant, tenantOfProfileId, userIdOfProfileId, type TenantContext } from "./tenant.js";
+import { effectiveBranding, TenantAdminApiImpl } from "./tenant-branding.js";
+import { isOrganizationAdmin, makeUserKey, personalTenantId, resolveTenant, tenantOfProfileId, userIdOfProfileId, type TenantContext } from "./tenant.js";
 import type { WorkspaceInfo } from "@gadgets/workshop-shared/api";
+import {
+  blueprintScreenshotFields, isBlueprintIsolation, isBundledBlueprint, readBlueprintFor,
+  type BlueprintCaller,
+} from "./blueprint-access.js";
 
 const logger = createWorkshopLogger("workshop.server");
 
@@ -45,14 +50,28 @@ const logger = createWorkshopLogger("workshop.server");
 // fetch handler), so later requests skip the call. The DO holds the real answer.
 let bundledBlueprintInstallStarted = false;
 
+// Likewise for attributing blueprints that predate tenants to their tenant (a deployment with
+// tenants only; see AdminSettings.ensureBlueprintTenants).
+let blueprintTenantSweepStarted = false;
+
 const USER_SEARCH_POLICY_CACHE_TTL_MS = 30_000;
 
-function publicBlueprintInfo(id: string, metadata: BlueprintPublicInfo['metadata']): BlueprintPublicInfo {
-  return {
-    id,
-    metadata,
-    screenshotUrl: blueprintScreenshotUrl(id, metadata),
-  };
+// `isGlobal` is true for a bundled blueprint, whose image keeps a public URL (see blueprint-access.ts).
+function publicBlueprintInfo(env: Env, id: string, metadata: BlueprintPublicInfo['metadata'],
+                             isGlobal: boolean): BlueprintPublicInfo {
+  return { id, metadata, ...blueprintScreenshotFields(env, id, metadata, isGlobal) };
+}
+
+// The archive a download returns: the blueprint's metadata without its screenshot, and its content.
+async function blueprintArchive(env: Env, id: string, kvRecord: BlueprintKvRecord)
+    : Promise<ReadableStream<Uint8Array>> {
+  let r2Object = await env.BLUEPRINT_CONTENT.get(blueprintContentKey(id, kvRecord.metadata));
+  if (!r2Object) throw new Error("Blueprint content not found in R2.");
+
+  let metadata = { ...kvRecord.metadata };
+  delete metadata.screenshot;
+
+  return buildBlueprintArchiveStream(metadata, r2Object.body, r2Object.size);
 }
 
 // A Clerk connection is refused, and closed, once this long passes without a renewSession(). The
@@ -214,6 +233,8 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
         throw createAuthError(AUTH_ERROR_CODES.sessionNotPermitted);
       }
       await this.#user.checkClerkSession(claims.issuedAt);
+      // The role can change while connected; the capability a role grants follows the latest token.
+      this.clerkSession = tenant;
     } catch (error) {
       // Refused from now on, and closed shortly after so this reply still reaches the client.
       this.#sessionDeadline = 0;
@@ -542,8 +563,9 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   async listFeaturedBlueprints(): Promise<BlueprintPublicInfo[]> {
+    // Featured blueprints are the deployment's curation, so their images stay public.
     return (await listFeaturedBlueprintsFromKv(this.env)).map(
-        blueprint => publicBlueprintInfo(blueprint.id, blueprint.metadata));
+        blueprint => publicBlueprintInfo(this.env, blueprint.id, blueprint.metadata, true));
   }
 
   async addBlueprintToLibrary(blueprintId: string): Promise<void> {
@@ -575,6 +597,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
       let kvRecord: BlueprintKvRecord = {
         metadata,
         ownerId: this.#userId.toString(),
+        tenantId: tenantOfProfileId(this.#userId.name!),
       };
 
       await this.env.BLUEPRINTS.put(blueprintId, JSON.stringify(kvRecord));
@@ -602,7 +625,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     bindings: Record<string, BlueprintBindingAssignment>
   ): Promise<RpcStub<Overseer>> {
     // 1. Read blueprint from KV.
-    let kvRecord = await readBlueprintKvRecord(this.env, blueprintId);
+    let kvRecord = await readBlueprintFor(this.env, blueprintId, this.#blueprintCaller());
     if (!kvRecord) throw new Error("Blueprint not found.");
 
     // 2. Create new Overseer DO (same as newGadget()).
@@ -713,6 +736,46 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return overseerResult;
   }
 
+  // Who a blueprint read is for: this user's tenant. Ignored in a deployment without tenants.
+  #blueprintCaller(): BlueprintCaller {
+    return { tenantId: tenantOfProfileId(this.#userId.name!), userDoId: this.#userId.toString() };
+  }
+
+  async getBlueprint(id: string): Promise<BlueprintPublicInfo | null> {
+    let kvRecord = await this.#readBlueprint(id);
+    if (!kvRecord) return null;
+    return publicBlueprintInfo(this.env, id, kvRecord.metadata, isBundledBlueprint(kvRecord));
+  }
+
+  async downloadBlueprint(id: string): Promise<ReadableStream<Uint8Array>> {
+    let kvRecord = await this.#readBlueprint(id);
+    if (!kvRecord) throw new Error("Blueprint not found.");
+    return blueprintArchive(this.env, id, kvRecord);
+  }
+
+  async getBlueprintScreenshot(id: string)
+      : Promise<{ bytes: Uint8Array; contentType: "image/png" | "image/jpeg" } | null> {
+    let kvRecord = await this.#readBlueprint(id);
+    if (!kvRecord?.metadata.screenshot) return null;
+    let object = await this.env.BLUEPRINT_CONTENT.get(`${BLUEPRINT_SCREENSHOT_R2_PREFIX}${id}`);
+    if (!object) return null;
+    return {
+      bytes: new Uint8Array(await object.arrayBuffer()),
+      contentType: object.httpMetadata?.contentType === "image/png" ? "image/png" : "image/jpeg",
+    };
+  }
+
+  // The record of a blueprint this caller may read, logging a refusal (tenant and user ids only).
+  #readBlueprint(id: string): Promise<BlueprintKvRecord | null> {
+    let caller = this.#blueprintCaller();
+    return readBlueprintFor(this.env, id, caller, () => {
+      logger.warn("blueprint access refused", {
+        event: "blueprint.access.refused", tenantId: caller.tenantId,
+        userId: userIdOfProfileId(this.#userId.name!),
+      });
+    });
+  }
+
   async deleteOrphanedBlueprint(blueprintId: string): Promise<void> {
     return this.#user.deleteOwnedBlueprint(blueprintId);
   }
@@ -753,6 +816,36 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return this.#isAdmin();
   }
 
+  async getBranding(): Promise<EffectiveBranding | null> {
+    const tenant = this.clerkSession;
+    if (!tenant || tenant.kind !== "organization") return null;
+    this.#assertSessionLive();
+    if (!(await readAdminConfig(this.env)).tenantBrandingEnabled) return null;
+    return effectiveBranding(await retryOnDoReset(() =>
+        this.ctx.exports.UserDirectoryDurableObject.getByName(tenant.tenantId).getBranding()));
+  }
+
+  async getTenantAdminApi(): Promise<RpcStub<TenantAdminApi> | null> {
+    const tenant = this.clerkSession;
+    if (!tenant || tenant.kind !== "organization" || !isOrganizationAdmin(tenant.orgRole)) return null;
+    if (!(await readAdminConfig(this.env)).tenantBrandingEnabled) return null;
+    // Checked again on every call: the role and the deployment's setting can change after this.
+    const assertAllowed = async () => {
+      const current = this.#clerkTenant();
+      if (!isOrganizationAdmin(current.orgRole)) {
+        throw createAuthError(AUTH_ERROR_CODES.sessionNotPermitted);
+      }
+      if (!(await readAdminConfig(this.env)).tenantBrandingEnabled) {
+        throw new Error("Organization branding is turned off.");
+      }
+    };
+    // @ts-expect-error Cap'n Web RPC stubs and native RPC targets are compatible but the type
+    //     system doesn't know this.
+    return new TenantAdminApiImpl(
+        this.ctx.exports.UserDirectoryDurableObject.getByName(tenant.tenantId),
+        tenant.tenantId, tenant.userId, assertAllowed);
+  }
+
   async getAdminApi(): Promise<RpcStub<AdminApi> | null> {
     if (!this.#isAdmin()) return null;
     // #isAdmin() guarantees a non-empty user id name. Forwarded to gatekeepers when listing the
@@ -765,6 +858,13 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 }
 
 async function serveBlueprintScreenshot(env: Env, blueprintId: string): Promise<Response> {
+  // An image request carries no sign-in, and the response below is publicly cacheable, so in a
+  // deployment with tenants only a bundled blueprint's image is served here; a tenant's is fetched
+  // with AuthenticatedApi.getBlueprintScreenshot().
+  if (isBlueprintIsolation(env) && !(await readBlueprintFor(env, blueprintId, undefined))) {
+    return new Response("Not Found", {status: 404});
+  }
+
   let object = await env.BLUEPRINT_CONTENT.get(`${BLUEPRINT_SCREENSHOT_R2_PREFIX}${blueprintId}`);
   if (!object) return new Response("Not Found", {status: 404});
 
@@ -984,24 +1084,20 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
     return `${username}:${token}`;
   }
 
+  // Not signed in, so in a deployment with tenants only a bundled blueprint is found here; the
+  // others are reached through AuthenticatedApi.getBlueprint() (see blueprint-access.ts).
   async getBlueprint(id: string): Promise<BlueprintPublicInfo | null> {
-    let kvRecord = await readBlueprintKvRecord(this.env, id);
+    let kvRecord = await readBlueprintFor(this.env, id, undefined);
     if (!kvRecord) return null;
 
-    return publicBlueprintInfo(id, kvRecord.metadata);
+    return publicBlueprintInfo(this.env, id, kvRecord.metadata, true);
   }
 
   async downloadBlueprint(id: string): Promise<ReadableStream<Uint8Array>> {
-    let kvRecord = await readBlueprintKvRecord(this.env, id);
+    let kvRecord = await readBlueprintFor(this.env, id, undefined);
     if (!kvRecord) throw new Error("Blueprint not found.");
 
-    let r2Object = await this.env.BLUEPRINT_CONTENT.get(blueprintContentKey(id, kvRecord.metadata));
-    if (!r2Object) throw new Error("Blueprint content not found in R2.");
-
-    let metadata = { ...kvRecord.metadata };
-    delete metadata.screenshot;
-
-    return buildBlueprintArchiveStream(metadata, r2Object.body, r2Object.size);
+    return blueprintArchive(this.env, id, kvRecord);
   }
 }
 
@@ -1077,6 +1173,18 @@ export default {
               bundledBlueprintInstallStarted = false;
               logger.warn("failed to install bundled blueprints", {
                 event: "formats.install.trigger.failed", error: err,
+              });
+            }));
+      }
+
+      if (!blueprintTenantSweepStarted && isBlueprintIsolation(env)) {
+        blueprintTenantSweepStarted = true;
+        ctx.waitUntil(ctx.exports.AdminSettings.getByName("").ensureBlueprintTenants()
+            .then((complete: boolean) => { if (!complete) blueprintTenantSweepStarted = false; })
+            .catch((err: unknown) => {
+              blueprintTenantSweepStarted = false;
+              logger.warn("failed to attribute blueprints to tenants", {
+                event: "blueprint.tenant.sweep.failed", error: err,
               });
             }));
       }

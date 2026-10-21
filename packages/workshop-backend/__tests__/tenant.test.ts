@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  makeUserKey, personalTenantId, resolveTenant, sameTenant, tenantOfProfileId, userIdOfProfileId,
+  isOrganizationAdmin, makeUserKey, personalTenantId, resolveTenant, sameTenant, tenantOfProfileId, userIdOfProfileId,
 } from "../src/tenant.js";
 
 describe("user keys", () => {
@@ -52,5 +52,15 @@ describe("resolveTenant", () => {
   it("fails closed when single-tenant mode has no tenant to pin", () => {
     expect(resolveTenant({ TENANT_MODE: "single" }, { userId: "u", orgId: "org_a" }))
         .toEqual({ ok: false, reason: "misconfigured" });
+  });
+});
+
+describe("isOrganizationAdmin", () => {
+  it("accepts the administrator role of both token versions and nothing else", () => {
+    expect(isOrganizationAdmin("admin")).toBe(true);
+    expect(isOrganizationAdmin("org:admin")).toBe(true);
+    for (const role of [undefined, "", "member", "org:member", "basic_member", "Admin", "administrator"]) {
+      expect(isOrganizationAdmin(role)).toBe(false);
+    }
   });
 });

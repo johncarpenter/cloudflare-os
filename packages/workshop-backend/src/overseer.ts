@@ -1,6 +1,6 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
+import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
@@ -61,7 +61,7 @@ import {
 } from "./blueprint-release";
 import { encodeGitTree, gitObjectOid, parseGitCommitRefs } from "./git-codec";
 import {
-  listFeaturedBlueprintsFromKv, readBlueprintKvRecord, type BlueprintKvRecord,
+  listFeaturedBlueprintsFromKv, type BlueprintKvRecord,
 } from "./storage-schema/blueprints-kv";
 import { WebFetchEnv } from "./web-fetch";
 import { UserDurableObject, type UserChatContext } from "./user";
@@ -73,7 +73,8 @@ import { checkUsageAndBalance } from "./ai-gateway-billing/limits/usage-checker"
 import { normalizeAgentCatalog } from "./agent-catalog";
 import { refreshCachedBalance } from "./ai-gateway-billing/cloudflare/connection-service";
 import { SharingManager, SharingCaller, roleRank } from "./sharing";
-import { sameTenant } from "./tenant";
+import { sameTenant, tenantOfProfileId } from "./tenant";
+import { blueprintScreenshotFields, readBlueprintFor, type BlueprintCaller } from "./blueprint-access";
 import { AutoApprovalDrainer, autoApprovalRule } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext } from "./observability";
@@ -3389,8 +3390,12 @@ class OverseerImpl implements AgentHooks {
                        clientUserId: string)
       : Promise<ApplyBlueprintResult> {
     let author = userMeta.profile;
-    let kvRecord = await readBlueprintKvRecord(this.env, blueprintId);
-    if (!kvRecord) throw new Error("Blueprint not found.");
+    // Through the access check: a blueprint of another tenant, which a gadget made before tenants
+    // may still follow, looks the same as one that is gone.
+    let kvRecord = await readBlueprintFor(this.env, blueprintId, await this.blueprintCaller());
+    if (!kvRecord) {
+      throw new Error("Blueprint not found. It may have been deleted, or belong to another organization.");
+    }
     let {metadata} = kvRecord;
     let release = await this.loadBlueprint(blueprintId, metadata);
 
@@ -7884,6 +7889,7 @@ class OverseerImpl implements AgentHooks {
       metadata: record.metadata,
       ownerId: this.ownerId,
       gadgetId: this.ctx.id.toString(),
+      tenantId: tenantOfProfileId(await this.getOwnerProfileId()),
     };
     await this.env.BLUEPRINTS.put(record.id, JSON.stringify(kvRecord));
 
@@ -8666,7 +8672,7 @@ class OverseerImpl implements AgentHooks {
     files: Record<string, string>, notes: string, output?: BlueprintOutput,
     merge: Omit<BlueprintMerge, "gadgetId">,
   }> {
-    let kvRecord = await readBlueprintKvRecord(this.env, blueprintId);
+    let kvRecord = await readBlueprintFor(this.env, blueprintId, await this.blueprintCaller());
     if (!kvRecord) {
       throw new Error(`No such blueprint: ${blueprintId}. Use listBlueprints to see available ` +
           `blueprints.`);
@@ -9270,6 +9276,15 @@ class OverseerImpl implements AgentHooks {
     const ownerProfile = await ownerDo.whoami();
     this.ownerProfileId = ownerProfile.id;
     return ownerProfile.id;
+  }
+
+  // Who a blueprint read in this workspace is for: its owner's tenant. Everyone who can open a
+  // workspace is in its owner's tenant (see open()), so this is also every collaborator's.
+  async blueprintCaller(): Promise<BlueprintCaller> {
+    return {
+      tenantId: tenantOfProfileId(await this.getOwnerProfileId()),
+      userDoId: this.ownerId!,
+    };
   }
 
   #sharingManager?: SharingManager;
@@ -11706,7 +11721,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         description: record.metadata.description,
         version: record.metadata.version,
         codeVersionDate: await this.#blueprintCodeDate(record),
-        screenshotUrl: blueprintScreenshotUrl(record.id, record.metadata),
+        ...blueprintScreenshotFields(this.impl.env, record.id, record.metadata, false),
         dirty: record.dirty,
         ...(await this.#hasUnpublishedChanges(record) ? {unpublishedChanges: true} : {}),
       });
@@ -12514,7 +12529,7 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
       description: metadata.description,
       version: metadata.version,
       codeVersionDate,
-      screenshotUrl: blueprintScreenshotUrl(id, metadata),
+      ...blueprintScreenshotFields(this.impl.env, id, metadata, false),
       dirty: record.dirty,
     };
   }

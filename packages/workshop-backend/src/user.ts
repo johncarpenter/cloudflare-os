@@ -25,6 +25,7 @@ import {
   type DeviceSessionCredential, type DeviceSessionHandoff,
 } from "./auth/device-session-handoff.js";
 import { makeUserKey, tenantOfProfileId, userIdOfProfileId } from "./tenant.js";
+import { readBlueprintFor } from "./blueprint-access.js";
 
 const logger = createWorkshopLogger("workshop.user");
 
@@ -1225,7 +1226,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async addBlueprintToLibrary(id: string): Promise<void> {
-    let kvRecord = await readBlueprintKvRecord(this.env, id);
+    let kvRecord = await readBlueprintFor(this.env, id, {
+      tenantId: tenantOfProfileId(this.storage.profile.get().id),
+      userDoId: this.ctx.id.toString(),
+    });
     if (!kvRecord) {
       throw new Error("Blueprint not found.");
     }

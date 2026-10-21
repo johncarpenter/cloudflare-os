@@ -224,6 +224,18 @@ Featured blueprint state is split across two stores:
 - The authoritative `featured` bit lives in the owning user's `blueprints` record inside their User DO.
 - The `AdminSettings` durable object is a singleton (`getByName("")`) that mirrors the current public metadata for featured blueprints and writes a KV snapshot consumed by `AuthenticatedApi.listFeaturedBlueprints()`.
 
+## Blueprints and tenants
+
+In a deployment with Clerk (see [clerk-signin.md](clerk-signin.md)) a published blueprint belongs to the tenant that published it: `BlueprintKvRecord.tenantId`, written from the publisher's user key. Everything that reads a blueprint by id goes through `readBlueprintFor()` (`src/blueprint-access.ts`), which answers `null` -- the same as for an id that does not exist -- unless the caller's tenant owns the record. That covers the blueprint's details, download, preview image, adding it to a library, creating a gadget from it, and applying it to a gadget as an update. A refusal is logged as `blueprint.access.refused` with tenant and user ids only.
+
+- **Bundled blueprints** have no owner and are readable by everyone, signed in or not. They are the only blueprints the unauthenticated `PublicApi.getBlueprint()` / `downloadBlueprint()` and the public `/blueprint-screenshot/<id>` route serve; for anything else those answer exactly as for a missing id.
+- **Signed-in access** to a tenant's blueprints is through `AuthenticatedApi.getBlueprint()`, `downloadBlueprint()` and `getBlueprintScreenshot()`. A tenant's preview image has no public URL (an `<img>` request carries no sign-in, and a shared cache would keep it), so `BlueprintPublicInfo.hasScreenshot` is set instead and the browser fetches the bytes over its connection.
+- **Standard formats and featuring** are limited to bundled blueprints: `AdminApi.promoteFormat()` refuses anything else and the featured catalog is only ever bundled blueprints.
+- **Blueprints that predate tenants** have an `ownerId` and no `tenantId`. Until attributed they are readable by their owner alone. `AdminSettings.ensureBlueprintTenants()` attributes each to its publisher's tenant and drops tenant-owned entries from the featured catalog; it runs from the first `/api` request, is idempotent, and is retried until it completes.
+- A deployment without Clerk is unchanged: every blueprint stays readable by link.
+
+A blueprint link that was already shared outside the tenant stops working for everyone else; it cannot be recalled from copies.
+
 ## Output Formats and Bundled Blueprints
 
 A **format** is an ordinary blueprint the deployment has promoted, so that "New Doc" or "New Slides" appears in the composer's `+` menu and in the list the agent is told to prefer. Promotion is admin curation (`AdminConfig.formats`, managed in the admin **Formats** panel); nothing about the blueprint itself changes.

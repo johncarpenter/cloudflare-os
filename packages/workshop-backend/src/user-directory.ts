@@ -1,5 +1,9 @@
 import type { UserDirectoryRecord } from "@gadgets/workshop-shared/api";
 import { DurableObject } from "cloudflare:workers";
+import {
+  hasBranding, validateBrandingColor, validateBrandingLogo, validateBrandingName,
+  type StoredBranding,
+} from "./tenant-branding.js";
 
 const SEARCH_RESULT_LIMIT = 10;
 // Every authenticated user can reach this one DO, so a search bounds what it is asked to scan.
@@ -22,6 +26,73 @@ export class UserDirectoryDurableObject extends DurableObject<Cloudflare.Env> {
       search_text TEXT NOT NULL,
       rev INTEGER NOT NULL
     ) STRICT`);
+    // The organization's branding: at most one row, and none when nothing is set.
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS branding (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      name TEXT,
+      logo BLOB,
+      accent_color TEXT,
+      updated_at INTEGER NOT NULL
+    ) STRICT`);
+  }
+
+  /** The saved branding of the tenant this directory belongs to; every part absent when none. */
+  getBranding(): StoredBranding {
+    const row = this.ctx.storage.sql.exec<{
+      name: string | null; logo: ArrayBuffer | null; accent_color: string | null; updated_at: number;
+    }>(`SELECT name, logo, accent_color, updated_at FROM branding WHERE id = 1`).toArray()[0];
+    if (!row) return {};
+    return {
+      ...(row.name !== null && { name: row.name }),
+      ...(row.logo !== null && { logo: new Uint8Array(row.logo) }),
+      ...(row.accent_color !== null && { accentColor: row.accent_color }),
+      updatedAt: new Date(row.updated_at),
+    };
+  }
+
+  /**
+   * Sets or clears (null) the name and accent color; an omitted field is left alone. Validated
+   * before anything is written. Refused on the legacy directory, which is no tenant.
+   */
+  async updateIdentity(update: { name?: string | null; accentColor?: string | null }): Promise<void> {
+    const name = update.name == null ? update.name : validateBrandingName(update.name);
+    if (update.accentColor != null) validateBrandingColor(update.accentColor);
+    await this.#save(current => ({
+      ...current,
+      ...(name !== undefined && { name: name ?? undefined }),
+      ...(update.accentColor !== undefined && { accentColor: update.accentColor ?? undefined }),
+    }));
+  }
+
+  /** Sets the logo from PNG bytes, or clears it (null). Validated before anything is written. */
+  async updateLogo(png: Uint8Array | null): Promise<void> {
+    if (png !== null) validateBrandingLogo(png);
+    await this.#save(current => ({ ...current, logo: png ?? undefined }));
+  }
+
+  /** Removes all of the tenant's branding. Idempotent. */
+  async clearBranding(): Promise<void> {
+    await this.#save(() => ({}));
+  }
+
+  async #save(change: (current: StoredBranding) => StoredBranding): Promise<void> {
+    const tenantId = this.ctx.id.name;
+    if (!tenantId) throw new Error("Only a named tenant can have branding.");
+    const next = change(this.getBranding());
+    const sql = this.ctx.storage.sql;
+    let updatedAt: Date | null = null;
+    if (hasBranding(next)) {
+      updatedAt = new Date();
+      sql.exec(
+          `INSERT INTO branding (id, name, logo, accent_color, updated_at) VALUES (1, ?, ?, ?, ?)
+           ON CONFLICT (id) DO UPDATE SET name = excluded.name, logo = excluded.logo,
+             accent_color = excluded.accent_color, updated_at = excluded.updated_at`,
+          next.name ?? null, next.logo ?? null, next.accentColor ?? null, updatedAt.valueOf());
+    } else {
+      sql.exec(`DELETE FROM branding`);
+    }
+    // The operator listing is derived from this, so a failure here throws and a retry repairs it.
+    await this.ctx.exports.AdminSettings.getByName("").recordTenantBranding(tenantId, updatedAt);
   }
 
   /**
@@ -70,6 +141,7 @@ export class UserDirectoryDurableObject extends DurableObject<Cloudflare.Env> {
       if (failure) throw failure.reason;
     }
     this.ctx.storage.sql.exec(`DELETE FROM users`);
+    await this.clearBranding();
   }
 
   /**

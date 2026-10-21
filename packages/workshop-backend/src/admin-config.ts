@@ -349,6 +349,9 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     modelsDevSuggestions: typeof p.modelsDevSuggestions === "boolean"
       ? p.modelsDevSuggestions
       : DEFAULT_ADMIN_CONFIG.modelsDevSuggestions,
+    tenantBrandingEnabled: typeof p.tenantBrandingEnabled === "boolean"
+      ? p.tenantBrandingEnabled
+      : DEFAULT_ADMIN_CONFIG.tenantBrandingEnabled,
   };
 }
 

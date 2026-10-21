@@ -55,6 +55,22 @@ export function userIdOfProfileId(profileId: string): string {
   return at < 0 ? profileId : profileId.slice(at + 1);
 }
 
+/**
+ * Whether an organization role from a verified session is the administrator role: `admin` in
+ * session token version 2, `org:admin` in version 1. A personal tenant has no role, so never.
+ */
+export function isOrganizationAdmin(orgRole: string | undefined): boolean {
+  return orgRole === "admin" || orgRole === "org:admin";
+}
+
+/**
+ * Whether `value` can name a tenant: non-empty, no separator, and short. `""` is the legacy tenant
+ * and is not a tenant that can be addressed by id.
+ */
+export function isTenantId(value: string): boolean {
+  return value !== "" && !value.includes(SEP) && value.length <= 128;
+}
+
 /** Whether two profile ids belong to the same tenant. */
 export function sameTenant(a: string, b: string): boolean {
   return tenantOfProfileId(a) === tenantOfProfileId(b);

@@ -51,6 +51,13 @@ export type BlueprintKvRecord = {
    */
   ownerId?: string;
   gadgetId?: string;  // undefined = uploaded, not published from a gadget on this instance
+  /**
+   * The tenant that published or uploaded this blueprint (`tenantOfProfileId` of its publisher),
+   * which is the only tenant that may read it in a deployment with tenants; see
+   * blueprint-access.ts. `""` is the legacy tenant. Absent on a bundled blueprint (global, no
+   * `ownerId`) and on a record that predates tenants, which the backfill in AdminSettings attributes.
+   */
+  tenantId?: string;
 };
 
 /**

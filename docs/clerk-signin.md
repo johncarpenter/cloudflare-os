@@ -71,10 +71,21 @@ Clerk dashboard:
   keeps only a membership end so a session token issued before the deletion cannot recreate them.
   Members whose sign-in never reached the directory are not found. The shared legacy directory is
   never erased.
+- **Published blueprints** belong to the publishing organization and are readable only by its members
+  (see [blueprints.md](blueprints.md#blueprints-and-tenants)).
 - **Last-used workspace**: remembered per account in the personal-tenant record and restored once per
   browser session.
 
 Webhook failures return 500 so Svix retries; every step is idempotent.
+
+## Organization branding
+
+An organization's administrators can set its display name, a PNG logo and an accent color (`/organization`, from the profile menu). Members of that organization see them wherever the deployment's name, logo and accent color appear, including the tab title and icon; the sign-in pages keep the deployment's. A part that is not set falls back to the deployment's. Personal workspaces have no branding.
+
+- Stored in the organization's `UserDirectoryDurableObject` (named by the tenant id), so erasing the organization erases it. The logo follows the deployment logo's limits; the name is at most `MAX_SITE_NAME_LENGTH` characters.
+- Administrator means the verified token's organization role (`admin`, or `org:admin` in session token v1), refreshed at every `renewSession()` and checked again on each `TenantAdminApi` call -- a capability held after demotion refuses. It is not `ADMINS` and grants nothing else.
+- Members read it with `AuthenticatedApi.getBranding()`; the logo arrives as an inline data URL, since an image request carries no sign-in.
+- Operators (the `ADMINS` list) have an **Organizations** tab in the admin panel: turn per-organization branding off (everyone sees the deployment's; saved branding is kept) and clear one organization's. Changes are logged as `branding.changed` with ids only.
 
 ## Deploying
 

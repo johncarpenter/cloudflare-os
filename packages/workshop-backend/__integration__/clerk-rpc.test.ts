@@ -1,87 +1,18 @@
 import { createExecutionContext, runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
-import { newWebSocketRpcSession, type RpcStub } from "capnweb";
-import { exportJWK, generateKeyPair, SignJWT, type JWK, type KeyLike } from "jose";
 import {
   AUTH_ERROR_CODES, getAuthErrorCode, getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES,
-  type PublicApi,
 } from "@gadgets/workshop-shared/api";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import server from "../src/server";
 import { makeUserKey, personalTenantId } from "../src/tenant.js";
+import {
+  CLERK, connect, failure, fresh, installClerkIssuer, mint, signIn,
+} from "./clerkFixture";
 
-const ISSUER = "https://clerk.test";
-const ORIGIN = "https://workshop.example";
-const CLERK = {
-  CLERK_ISSUER: ISSUER,
-  CLERK_PUBLISHABLE_KEY: "pk_test_abc",
-  CLERK_AUTHORIZED_PARTIES: ORIGIN,
-};
-
-let privateKey: KeyLike;
-let publicJwk: JWK;
-const realFetch = globalThis.fetch;
-
-beforeAll(async () => {
-  const pair = await generateKeyPair("RS256");
-  privateKey = pair.privateKey;
-  publicJwk = { ...await exportJWK(pair.publicKey), alg: "RS256", use: "sig", kid: "test-key" };
-  // The issuer's JWKS is the only network the verifier touches.
-  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-    const url = input instanceof Request ? input.url : String(input);
-    if (url === `${ISSUER}/.well-known/jwks.json`) return Response.json({ keys: [publicJwk] });
-    return realFetch(input, init);
-  });
-}, 120_000);
+beforeAll(installClerkIssuer, 120_000);
 
 afterAll(() => { vi.restoreAllMocks(); });
-
-type TokenOptions = {
-  sub?: string; org?: string; name?: string; azp?: string; issuedAt?: number; expiresIn?: string;
-};
-
-function mint(options: TokenOptions = {}): Promise<string> {
-  return new SignJWT({
-    azp: options.azp ?? ORIGIN,
-    ...(options.org ? { o: { id: options.org, rol: "admin" } } : {}),
-    ...(options.name ? { name: options.name } : {}),
-  })
-      .setProtectedHeader({ alg: "RS256", kid: "test-key" })
-      .setSubject(options.sub ?? "user_1")
-      .setIssuer(ISSUER)
-      .setIssuedAt(options.issuedAt)
-      .setExpirationTime(options.expiresIn ?? "60s")
-      .sign(privateKey);
-}
-
-async function connect(extra: Record<string, unknown> = {}): Promise<RpcStub<PublicApi>> {
-  // Invoke the handler directly so the WebSocket session shares the test's execution context.
-  const response = await server.fetch(new Request("https://workshop.invalid/api", {
-    headers: { Upgrade: "websocket" },
-  }), { ...env, ...CLERK, ...extra } as typeof env, createExecutionContext());
-  expect(response.status).toBe(101);
-  const socket = response.webSocket;
-  if (!socket) throw new TypeError("Expected a WebSocket response.");
-  socket.accept();
-  return newWebSocketRpcSession<PublicApi>(socket);
-}
-
-// What a call fails with, as a value.
-async function failure(value: PromiseLike<unknown>): Promise<Error & { code?: unknown }> {
-  try {
-    await value;
-  } catch (error) {
-    if (error instanceof Error) return error;
-  }
-  throw new Error("Expected the call to be refused.");
-}
-
-let counter = 0;
-const fresh = (prefix: string) => `${prefix}_${++counter}_${crypto.randomUUID().slice(0, 8)}`;
-
-async function signIn(publicApi: RpcStub<PublicApi>, options: TokenOptions = {}) {
-  return await publicApi.authenticateFromClerk(await mint(options));
-}
 
 describe("Clerk sign-in", () => {
   it("opens a personal tenant keyed by the Clerk user id, and keeps it when the profile changes",

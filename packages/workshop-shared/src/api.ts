@@ -942,6 +942,46 @@ export interface AuthenticatedApi extends RpcTarget {
    */
   getAdminApi(): Promise<RpcStub<AdminApi> | null>;
 
+  // --- Tenant branding ---
+
+  /**
+   * The branding the active organization's members see: only the parts the organization has set.
+   * Null in a personal workspace, for an organization with no branding, when the operator turned
+   * per-organization branding off, and on a deployment without organizations. Clients merge it over
+   * `ServerConfig`; the sign-in pages never use it.
+   */
+  getBranding(): Promise<EffectiveBranding | null>;
+
+  /**
+   * A capability for managing the active organization's branding, or null unless the verified
+   * session holds the administrator role in an organization on a deployment with per-organization
+   * branding on. The role is refreshed at every `renewSession()` and each method re-checks it, so a
+   * capability held after the role is removed refuses.
+   */
+  getTenantAdminApi(): Promise<RpcStub<TenantAdminApi> | null>;
+
+  // --- Blueprints ---
+
+  /**
+   * Like `PublicApi.getBlueprint()` for a signed-in caller: also finds the blueprints of the caller's
+   * own tenant. Null for an id that does not exist and for one the caller may not read, which look
+   * the same.
+   */
+  getBlueprint(id: string): Promise<BlueprintPublicInfo | null>;
+
+  /**
+   * Like `PublicApi.downloadBlueprint()` for a signed-in caller. Throws "Blueprint not found." for
+   * an id that does not exist and for one the caller may not read.
+   */
+  downloadBlueprint(id: string): Promise<ReadableStream<Uint8Array>>;
+
+  /**
+   * The screenshot of a blueprint the caller may read, as image bytes, or null when there is none or
+   * the caller may not read it. This is how a tenant's blueprint image is shown: it has no public URL.
+   */
+  getBlueprintScreenshot(id: string)
+      : Promise<{ bytes: Uint8Array; contentType: "image/png" | "image/jpeg" } | null>;
+
   // TODO:
   // - Edit permissions on a connected account.
 }
@@ -1102,6 +1142,8 @@ export type AdminSettingsView = {
   banner: BannerConfig;
   /** Accent color hex, or "" for the default theme. */
   accentColor: string;
+  /** Whether organizations may brand their own workspace (see `AuthenticatedApi.getBranding`). */
+  tenantBrandingEnabled: boolean;
   /** Every bound gatekeeper and its resource types, with enabled state (not hidden when disabled). */
   resourceVendors: AdminResourceVendor[];
   /** The blueprints promoted as standard output formats, in menu order (including disabled ones). */
@@ -1240,6 +1282,21 @@ export interface AdminApi {
    * Rejects an invalid hex color.
    */
   setAccentColor(color: string): Promise<void>;
+
+  /**
+   * Turn per-organization branding on or off for the deployment. Off shows everyone the
+   * deployment's branding and hides the organization settings, but keeps what organizations saved.
+   */
+  setTenantBrandingEnabled(enabled: boolean): Promise<void>;
+
+  /** The organizations that have saved branding, newest change first. */
+  listTenantBranding(): Promise<TenantBrandingSummary[]>;
+
+  /**
+   * Clear an organization's saved branding, so its members see the deployment's. Throws for an
+   * unknown tenant id format; clearing one with no branding is a no-op.
+   */
+  clearTenantBranding(tenantId: string): Promise<void>;
 
   /**
    * Returns whether the blueprint is featured on the deployment. Returns null when the blueprint
@@ -1444,6 +1501,66 @@ export type AuthVendorInfo = {
   logo?: AvatarImage;
   color?: string;
 };
+
+/**
+ * An organization's saved branding. Every part is optional: an absent one falls back to the
+ * deployment's.
+ */
+export type TenantBranding = {
+  /** Display name, at most MAX_SITE_NAME_LENGTH characters. */
+  name?: string;
+
+  /** The logo as PNG bytes, under the deployment logo's limits (MAX_SITE_LOGO_BYTES, MAX_SITE_LOGO_DIMENSION). */
+  logo?: Uint8Array;
+
+  /** Accent color as a hex color (`#rgb` or `#rrggbb`). */
+  accentColor?: string;
+
+  /** When any part last changed. */
+  updatedAt?: Date;
+};
+
+/** The branding an organization's members see, as returned by `AuthenticatedApi.getBranding()`. */
+export type EffectiveBranding = {
+  /** Replaces `ServerConfig.siteName`. */
+  siteName?: string;
+
+  /** Replaces `ServerConfig.siteLogo`; its url is an inline PNG data URL. */
+  siteLogo?: AvatarImage;
+
+  /** Replaces `ServerConfig.accentColor`. */
+  accentColor?: string;
+};
+
+/** One organization with saved branding, as listed to operators by `AdminApi.listTenantBranding()`. */
+export type TenantBrandingSummary = {
+  /** The Clerk organization id. */
+  tenantId: string;
+
+  /** When its branding last changed. */
+  updatedAt: Date;
+};
+
+/**
+ * Manages the active organization's branding. Minted by `AuthenticatedApi.getTenantAdminApi()` for
+ * an organization administrator, and every method re-checks that the session still holds the role.
+ * It reaches nothing but this organization's name, logo and accent color. A refused change throws,
+ * says what is wrong, and leaves the saved branding as it was.
+ */
+export interface TenantAdminApi extends RpcTarget {
+  /** The saved branding, including the logo bytes, for editing. */
+  getBranding(): Promise<TenantBranding>;
+
+  /**
+   * Set or clear (null) the name and the accent color; an omitted field is left alone. Rejects a
+   * name that is blank, over MAX_SITE_NAME_LENGTH, or has control characters, and a color that is
+   * not a hex color.
+   */
+  setIdentity(update: { name?: string | null; accentColor?: string | null }): Promise<void>;
+
+  /** Set the logo from PNG bytes, or clear it (null). The header, size and dimensions are checked. */
+  setLogo(png: Uint8Array | null): Promise<void>;
+}
 
 /** What the browser needs to start Clerk. Public by design. */
 export type ClerkClientConfig = {
@@ -5181,8 +5298,15 @@ export type BlueprintPublicInfo = {
   id: string;
   metadata: BlueprintMetadata;
 
-  /** If present, browser-loadable URL for the public screenshot. */
+  /**
+   * If present, browser-loadable URL for the public screenshot. Absent for a blueprint a tenant
+   * owns in a deployment with tenants, whose image is not public: fetch it with
+   * `AuthenticatedApi.getBlueprintScreenshot()` when `hasScreenshot` is true.
+   */
   screenshotUrl?: string;
+
+  /** Whether the blueprint has a screenshot, however it is fetched. */
+  hasScreenshot?: boolean;
 };
 
 /** Gadget-side summary (returned by Overseer.listBlueprints). */
@@ -5192,7 +5316,10 @@ export type BlueprintGadgetSummary = {
   description: string;
   version: number;
   codeVersionDate: Date;  // timestamp of the exported code version
+  /** Absent in a deployment with tenants (see `BlueprintPublicInfo.screenshotUrl`). */
   screenshotUrl?: string;
+  /** Whether the blueprint has a screenshot, however it is fetched. */
+  hasScreenshot?: boolean;
   dirty?: boolean;        // true if last publish failed and needs retry
 
   /**

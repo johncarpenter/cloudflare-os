@@ -102,6 +102,12 @@ export type AdminConfig = {
    * false). The admin's browser reads it and fetches the suggestions; the server only stores it.
    */
   modelsDevSuggestions: boolean;
+  /**
+   * Whether organizations may brand their own workspace (default true). Off shows every member the
+   * deployment's branding and hides the settings, but keeps what organizations saved. Only
+   * meaningful on a deployment with organizations (see tenant-branding.ts).
+   */
+  tenantBrandingEnabled: boolean;
 };
 
 /**
@@ -147,6 +153,13 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   defaultReasoning: null,
   userModelsEnabled: true,
   modelsDevSuggestions: false,
+  tenantBrandingEnabled: true,
+};
+
+/** An organization with saved branding, as indexed for operators. */
+export type TenantBrandingIndexEntry = {
+  tenantId: string;
+  updatedAt: Date;
 };
 
 export function makeAdminSettingsStorage(storage: DurableObjectStorage) {
@@ -156,6 +169,13 @@ export function makeAdminSettingsStorage(storage: DurableObjectStorage) {
       // authoritative featured bit; this DO keeps the publishable deployment-wide copy.
       featuredBlueprints: collection<BlueprintPublicInfo>()({
         primaryKey: 'id',
+      }),
+
+      // The organizations that have saved branding, so operators can list them: tenants have no
+      // registry of their own. An index of what exists; each tenant's own Durable Object is the
+      // source of truth (see UserDirectoryDurableObject).
+      tenantBranding: collection<TenantBrandingIndexEntry>()({
+        primaryKey: 'tenantId',
       }),
     },
     singletons: {
@@ -173,6 +193,11 @@ export function makeAdminSettingsStorage(storage: DurableObjectStorage) {
       // exactly once per blueprint: an admin who then removes a format keeps it removed, while a
       // deployment that installed before curation existed still gets promoted.
       promotedFormatBlueprints: <string[]>[],
+
+      // Whether every blueprint that predates tenants has been attributed to its publisher's tenant
+      // (see AdminSettings.ensureBlueprintTenants). Until then such a record is readable by its
+      // owner only.
+      blueprintTenantsAttributed: false,
     },
   });
 }

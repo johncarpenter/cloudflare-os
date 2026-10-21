@@ -1,4 +1,4 @@
-import { AdminApi, AdminFormat, AdminFormatPatch, AdminModel, AdminResourceVendor, AdminSettingsView, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, ReasoningLevel, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { AdminApi, AdminFormat, AdminFormatPatch, AdminModel, AdminResourceVendor, AdminSettingsView, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, ReasoningLevel, SUGGESTED_MODELS, TenantBrandingSummary, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget } from 'capnweb';
@@ -16,6 +16,8 @@ import { SITE_LOGO_R2_KEY, siteLogoImage, validateSiteLogo } from './site-logo.j
 import { ambientGatekeeperMode, DEFAULT_AMBIENT_GATEKEEPER_MODE } from './provisioning-policy.js';
 import { buildGatekeeperVendorMap } from './auth/auth-vendors.js';
 import { UserDurableObject } from './user.js';
+import { isBlueprintIsolation, isBundledBlueprint } from './blueprint-access.js';
+import { isTenantId, tenantOfProfileId } from './tenant.js';
 import { bundledBlueprintsManifestVersion, installBundledBlueprints } from './bundled-blueprints.js';
 import { BUNDLED_BLUEPRINTS } from './generated/bundled-blueprints.js';
 
@@ -235,7 +237,10 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       // A deployment-installed blueprint (see bundled-blueprints.ts) has no owning User DO to hold
       // the authoritative featured bit, so the owner-anchored toggle doesn't apply -- the same
       // answer as an uploaded blueprint. It reaches users through the deployment's curation.
-      featureable: !!kvRecord.gadgetId && !!kvRecord.ownerId,
+      //
+      // In a deployment with tenants a published blueprint is its tenant's, and featuring would show
+      // it to everyone, so only the deployment's bundled blueprints reach the shared catalog.
+      featureable: !!kvRecord.gadgetId && !!kvRecord.ownerId && !isBlueprintIsolation(this.env),
     };
   }
 
@@ -276,6 +281,103 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       this.storage.featuredBlueprints.delete(blueprintId);
       await this.#writeFeaturedSnapshot();
     }
+  }
+
+  /**
+   * Attributes every blueprint that predates tenants to its publisher's tenant, and takes tenant-owned
+   * blueprints out of the shared featured list, in a deployment with tenants. Until a record is
+   * attributed only its owner can read it (see blueprint-access.ts), so this only widens access, to
+   * the publisher's own tenant. Idempotent; resolves false when something failed and should be asked
+   * for again. A blueprint whose publisher no longer exists stays owner-only, which is nobody.
+   */
+  ensureBlueprintTenants(): Promise<boolean> {
+    return this.#attributeInFlight ??= this.#attributeBlueprintTenants()
+        .finally(() => { this.#attributeInFlight = undefined; });
+  }
+
+  #attributeInFlight?: Promise<boolean>;
+
+  async #attributeBlueprintTenants(): Promise<boolean> {
+    if (!isBlueprintIsolation(this.env) || this.storage.blueprintTenantsAttributed.get()) return true;
+
+    let complete = true;
+    let cursor: string | undefined;
+    do {
+      let page = await this.env.BLUEPRINTS.list({cursor});
+      for (let key of page.keys) {
+        if (isReservedBlueprintKey(key.name)) continue;
+        try {
+          await this.#attributeBlueprint(key.name);
+        } catch (error) {
+          complete = false;
+          logger.warn("failed to attribute a blueprint to its tenant", {
+            event: "blueprint.tenant.attribute.failed", error,
+          });
+        }
+      }
+      cursor = page.list_complete ? undefined : page.cursor;
+    } while (cursor !== undefined);
+
+    // Featured entries are the shared catalog, which tenant-owned blueprints must not be in. The
+    // owner's featured bit is the authority, so clear it too or the next update would re-add them.
+    let changed = false;
+    for (let entry of Array.from(this.storage.featuredBlueprints.list())) {
+      let record = await readBlueprintKvRecord(this.env, entry.id);
+      if (!record || isBundledBlueprint(record)) continue;
+      // The owner's bit is cleared so a later update does not re-add the entry. The owner may no
+      // longer hold the record, in which case there is no bit to clear; the entry goes either way.
+      try {
+        await this.users.get(this.users.idFromString(record.ownerId!))
+            .setBlueprintFeatured(entry.id, false);
+      } catch (error) {
+        logger.warn("could not clear the featured bit of a tenant's blueprint", {
+          event: "blueprint.unfeature.failed", error,
+        });
+      }
+      this.storage.featuredBlueprints.delete(entry.id);
+      changed = true;
+    }
+    if (changed) await this.#writeFeaturedSnapshot();
+
+    if (complete) this.storage.blueprintTenantsAttributed.put(true);
+    return complete;
+  }
+
+  async #attributeBlueprint(id: string): Promise<void> {
+    let record = await readBlueprintKvRecord(this.env, id);
+    if (!record || record.ownerId === undefined || record.tenantId !== undefined) return;
+    let profile = await this.users.get(this.users.idFromString(record.ownerId)).whoamiIfExists();
+    if (!profile) return;
+    // Read again just before writing: the owner may have republished, which writes the tenant itself.
+    let latest = await readBlueprintKvRecord(this.env, id);
+    if (!latest || latest.tenantId !== undefined) return;
+    await this.env.BLUEPRINTS.put(
+        id, JSON.stringify({...latest, tenantId: tenantOfProfileId(profile.id)}));
+  }
+
+  // --- Organization branding ---
+
+  /**
+   * Records that an organization's branding changed, for the operator listing; `updatedAt` null
+   * removes it. Called by that organization's directory, which holds the branding itself.
+   */
+  recordTenantBranding(tenantId: string, updatedAt: Date | null): void {
+    if (updatedAt === null) {
+      this.storage.tenantBranding.delete(tenantId);
+    } else {
+      this.storage.tenantBranding.put({ tenantId, updatedAt });
+    }
+  }
+
+  listTenantBranding(): TenantBrandingSummary[] {
+    return Array.from(this.storage.tenantBranding.list())
+        .toSorted((a, b) => b.updatedAt.valueOf() - a.updatedAt.valueOf());
+  }
+
+  async clearTenantBranding(tenantId: string): Promise<void> {
+    if (!isTenantId(tenantId)) throw new Error("Invalid tenant id.");
+    // The directory holds the branding and removes its own index entry.
+    await this.ctx.exports.UserDirectoryDurableObject.getByName(tenantId).clearBranding();
   }
 
   // --- Deployment admin config ---
@@ -339,6 +441,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       announcement: config.announcement,
       banner: config.banner,
       accentColor: config.accentColor,
+      tenantBrandingEnabled: config.tenantBrandingEnabled,
       resourceVendors: await this.#listResourceConfig(config, adminUserId),
       formats: await this.#listFormatConfig(config),
       gatewayModels: this.#listGatewayModels(config),
@@ -385,6 +488,9 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     let record = await readBlueprintKvRecord(this.env, blueprintId);
     if (!record) {
       throw new Error("Blueprint not found.");
+    }
+    if (isBlueprintIsolation(this.env) && !isBundledBlueprint(record)) {
+      throw new Error("Only the deployment's bundled blueprints can be standard formats.");
     }
     await this.#mutateFormats(formats => {
       // Idempotent so retrying after a KV mirror failure reaches #mutateFormats()'s repair write.
@@ -901,6 +1007,18 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   async setUserSearchEnabled(enabled: boolean): Promise<void> {
     await this.admin.updateAdminConfig({ userSearchEnabled: enabled });
+  }
+
+  async setTenantBrandingEnabled(enabled: boolean): Promise<void> {
+    await this.admin.updateAdminConfig({ tenantBrandingEnabled: enabled });
+  }
+
+  async listTenantBranding(): Promise<TenantBrandingSummary[]> {
+    return await this.admin.listTenantBranding();
+  }
+
+  async clearTenantBranding(tenantId: string): Promise<void> {
+    await this.admin.clearTenantBranding(tenantId);
   }
 
   async setSiteName(name: string): Promise<void> {
