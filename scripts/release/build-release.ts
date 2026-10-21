@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 // Builds an immutable release: every deployable worker bundled exactly as `wrangler deploy`
-// would upload it (dry-run + outdir, with the repo's pinned wrangler), plus the Access-mode
-// workshop-frontend asset build, plus the release manifest that describes it all.
+// would upload it (dry-run + outdir, with the repo's pinned wrangler), plus the two workshop-frontend
+// asset builds (Access mode and standard, the one Clerk signs in through), plus the release manifest
+// that describes it all.
 //
 // Output layout (mirrored to R2 by upload-release.ts):
 //   <out>/manifest.json                    the release manifest (upload LAST — its presence
@@ -216,18 +217,29 @@ function pinnedWranglerVersion(): string {
   return pkg.version;
 }
 
-// Builds the Access-mode frontend (VITE_CF_ACCESS_MODE is a build-time flag,
-// workshop-frontend/src/useAuth.ts) — the one asset variant every release carries.
+// Builds the frontend in both of its sign-in modes, returned as the release's asset variants.
+//
+// `access` is the Cloudflare Access build (VITE_CF_ACCESS_MODE is a build-time flag,
+// workshop-frontend/src/useAuth.ts). `standard` is the same build without it, which signs in through
+// the Workshop's own methods -- including Clerk, whose key arrives at runtime from ServerConfig, so
+// the one build serves every deployment. A consumer picks a variant by name.
+//
+// Both write workshop-frontend/dist, so they run one after the other and each is collected before
+// the next overwrites it. The router bundle waits for both and only needs `dist` to exist.
 //
 // Through vp rather than a package script: `build` is a task, so there is no script to run, and the
 // task declares VITE_* as fingerprinted env — a release built at a different flag value is a cache
 // miss rather than a stale replay. Based on `vpRunEnv()` so the run gets the machine-aware
 // concurrency limit (vp/concurrency.ts); the limit is not a task input, so it never affects the hash.
-async function buildFrontend(signal: AbortSignal): Promise<CollectedAssets> {
-  const env = { ...vpRunEnv(), VITE_CF_ACCESS_MODE: "true" };
-  await run("frontend (access mode)", "pnpm",
-      ["exec", "vp", "run", "-F", "@gadgets/workshop-frontend", "build"], { env, signal });
-  return collectAssets(join(FRONTEND_DIR, "dist"));
+async function buildFrontend(signal: AbortSignal): Promise<Record<string, CollectedAssets>> {
+  const variants: Record<string, CollectedAssets> = {};
+  for (const [variant, accessMode] of [["access", "true"], ["standard", "false"]] as const) {
+    const env = { ...vpRunEnv(), VITE_CF_ACCESS_MODE: accessMode };
+    await run(`frontend (${variant})`, "pnpm",
+        ["exec", "vp", "run", "-F", "@gadgets/workshop-frontend", "build"], { env, signal });
+    variants[variant] = collectAssets(join(FRONTEND_DIR, "dist"));
+  }
+  return variants;
 }
 
 // Bundles one package the way `wrangler deploy` would, without uploading. Run from the package dir
@@ -262,7 +274,7 @@ async function bundleWorker(pkg: DeployablePackage, bundleDir: string, signal: A
 // below dedupe down to the real failures by identity.
 async function buildAll(packages: DeployablePackage[], concurrency: number): Promise<{
   bundles: ReturnType<typeof collectModules>[];
-  assets: CollectedAssets;
+  assets: Record<string, CollectedAssets>;
 }> {
   const controller = new AbortController();
   // One abort listener per running command (`run`), removed as each finishes. The default cap of 10
@@ -365,7 +377,7 @@ async function main() {
 
   // 2. Everything below is ordered by package, so the release bytes do not depend on which build
   //    finished first.
-  const assetVariants = { access: assets };
+  const assetVariants = assets;
   for (const { blobs } of Object.values(assetVariants)) {
     for (const [hash, blob] of blobs) {
       writeFileSync(join(args.out, "assets", hash), blob.bytes);

@@ -76,6 +76,13 @@ Clerk dashboard:
 
 Webhook failures return 500 so Svix retries; every step is idempotent.
 
+## Deploying
+
+`infra/terraform` deploys an instance with these settings: `clerk`, `clerk_webhook_secret`,
+`operators` and `tenant` map to the variables above, and its outputs give the webhook URL and the
+allowed origin to enter in Clerk. It needs a release that carries the `standard` frontend variant.
+See `infra/terraform/README.md`.
+
 ## AI usage per client
 
 Gateway requests carry a `client` metadata entry: the user's tenant, or `CF_AI_GATEWAY_DEFAULT_CLIENT`

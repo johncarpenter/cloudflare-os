@@ -1,0 +1,17 @@
+# State holds secrets (webhook secret, integration credentials). Use an encrypted remote backend with
+# state locking, one state per instance. For example, Cloudflare R2 through its S3 API:
+#
+# terraform {
+#   backend "s3" {
+#     bucket                      = "terraform-state"
+#     key                         = "gadgets/pool/terraform.tfstate"
+#     region                      = "auto"
+#     endpoints                   = { s3 = "https://<account-id>.r2.cloudflarestorage.com" }
+#     skip_credentials_validation = true
+#     skip_region_validation      = true
+#     skip_requesting_account_id  = true
+#     skip_metadata_api_check     = true
+#     skip_s3_checksum            = true
+#     use_lockfile                = true
+#   }
+# }

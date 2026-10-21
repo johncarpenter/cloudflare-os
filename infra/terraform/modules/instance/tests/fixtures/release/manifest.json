@@ -1,0 +1,396 @@
+{
+  "assets": {},
+  "commit": "0000000000000000000000000000000000000000",
+  "createdAt": "2026-01-01T00:00:00.000Z",
+  "manifestVersion": 1,
+  "releaseId": "fixture-1",
+  "workers": {
+    "gatekeeper-context": {
+      "bindings": [
+        {
+          "name": "CONTEXT_COLLECTIONS",
+          "namespace_id": "$KV_CONTEXT_COLLECTIONS_ID",
+          "type": "kv_namespace"
+        }
+      ],
+      "compatibilityDate": "2026-09-04",
+      "compatibilityFlags": [
+        "nodejs_compat",
+        "allow_irrevocable_stub_storage"
+      ],
+      "inputs": [],
+      "installable": true,
+      "kind": "gatekeeper",
+      "mainModule": "index.js",
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "ContextCollectionDurableObject",
+            "UserLibraryDurableObject",
+            "LibraryRegistryDurableObject",
+            "ContextGatekeeper"
+          ],
+          "tag": "v0"
+        }
+      ],
+      "modules": [
+        {
+          "name": "index.js",
+          "r2Key": "modules/17365fe015559d14fd0658ed170a2791754ba0dcd28d85dcd11b277752b6aaea",
+          "sha256": "17365fe015559d14fd0658ed170a2791754ba0dcd28d85dcd11b277752b6aaea",
+          "size": 56,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "preinstall": true,
+      "shortName": "context",
+      "singleton": true,
+      "vars": {
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/context"
+      }
+    },
+    "gatekeeper-email": {
+      "bindings": [],
+      "compatibilityDate": "2026-09-04",
+      "compatibilityFlags": [
+        "allow_irrevocable_stub_storage",
+        "nodejs_als"
+      ],
+      "inputs": [],
+      "installable": false,
+      "kind": "gatekeeper",
+      "mainModule": "index.js",
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "UserAccount",
+            "EmailGatekeeperImpl",
+            "EmailAddress"
+          ],
+          "tag": "v0"
+        }
+      ],
+      "modules": [
+        {
+          "name": "index.js",
+          "r2Key": "modules/8a29b9448ae6997819b01ec4d606242a1ba25ff4a6292b23f951785540bdc4a9",
+          "sha256": "8a29b9448ae6997819b01ec4d606242a1ba25ff4a6292b23f951785540bdc4a9",
+          "size": 54,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "shortName": "email",
+      "vars": {
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/email"
+      }
+    },
+    "gatekeeper-github": {
+      "bindings": [
+        {
+          "name": "CLIENT_ID",
+          "text": "$SECRET(CLIENT_ID)",
+          "type": "secret_text"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "text": "$SECRET(CLIENT_SECRET)",
+          "type": "secret_text"
+        }
+      ],
+      "compatibilityDate": "2026-09-04",
+      "compatibilityFlags": [
+        "allow_irrevocable_stub_storage",
+        "nodejs_als"
+      ],
+      "inputs": [
+        {
+          "consoleUrl": "https://github.com/settings/developers",
+          "kind": "secret",
+          "label": "OAuth client ID",
+          "name": "CLIENT_ID",
+          "redirectUriTemplate": "{PUBLIC_BASE_URL}/gatekeeper/github/oauth",
+          "setupSteps": [
+            "In GitHub Developer settings, create a new OAuth App (an OAuth App, not a GitHub App — GitHub Apps ignore OAuth scopes).",
+            "Set the Homepage URL to your instance URL, and the Authorization callback URL to the redirect URI below.",
+            "Register the application, then generate a new client secret.",
+            "Copy the Client ID and client secret here."
+          ]
+        },
+        {
+          "kind": "secret",
+          "label": "OAuth client secret",
+          "name": "CLIENT_SECRET"
+        }
+      ],
+      "installable": true,
+      "kind": "gatekeeper",
+      "mainModule": "index.js",
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "UserAccount",
+            "GitHubGatekeeperImpl"
+          ],
+          "tag": "v0"
+        },
+        {
+          "new_sqlite_classes": [
+            "GitHubHookDriver"
+          ],
+          "tag": "v1"
+        }
+      ],
+      "modules": [
+        {
+          "name": "index.js",
+          "r2Key": "modules/75004ff3599faae5626ef48be79831ae6e6a33f8f4ae348e54e66f8efd3db84c",
+          "sha256": "75004ff3599faae5626ef48be79831ae6e6a33f8f4ae348e54e66f8efd3db84c",
+          "size": 55,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "shortName": "github",
+      "vars": {
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/github"
+      }
+    },
+    "gatekeeper-scheduler": {
+      "bindings": [],
+      "compatibilityDate": "2026-09-04",
+      "compatibilityFlags": [
+        "allow_irrevocable_stub_storage",
+        "nodejs_als"
+      ],
+      "inputs": [],
+      "installable": true,
+      "kind": "gatekeeper",
+      "mainModule": "index.js",
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "ScheduleDriver",
+            "SchedulerGatekeeper"
+          ],
+          "tag": "v1"
+        }
+      ],
+      "modules": [
+        {
+          "name": "index.js",
+          "r2Key": "modules/d55ab6c12ea42d1fa6e11baab8988aefacba4c9bbe3d1a946d4eb5f4a3dc4c81",
+          "sha256": "d55ab6c12ea42d1fa6e11baab8988aefacba4c9bbe3d1a946d4eb5f4a3dc4c81",
+          "size": 58,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "preinstall": true,
+      "shortName": "scheduler",
+      "singleton": true,
+      "vars": {
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/scheduler"
+      }
+    },
+    "router": {
+      "assetsConfig": {
+        "not_found_handling": "single-page-application",
+        "run_worker_first": [
+          "/api",
+          "/api/*",
+          "/blueprint-screenshot",
+          "/blueprint-screenshot/*",
+          "/gatekeeper/*"
+        ],
+        "variants": {
+          "access": {
+            "manifest": {
+              "/app.js": {
+                "hash": "816c43481018ea9a482a331e6a04b6ae",
+                "size": 30
+              },
+              "/index.html": {
+                "hash": "708bb6cfa8f695f54fba430268c48c46",
+                "size": 53
+              }
+            }
+          },
+          "standard": {
+            "manifest": {
+              "/app.js": {
+                "hash": "3a4f3930981170a09dc3cefa7326ee40",
+                "size": 14
+              },
+              "/index.html": {
+                "hash": "b61460ce69d5868c8505c1ff420bac99",
+                "size": 37
+              }
+            }
+          }
+        }
+      },
+      "bindings": [
+        {
+          "name": "WORKSHOP_BACKEND",
+          "service": "$WORKER_NAME(workshop-backend)",
+          "type": "service"
+        },
+        {
+          "name": "ASSETS",
+          "type": "assets"
+        }
+      ],
+      "compatibilityDate": "2026-09-04",
+      "compatibilityFlags": [],
+      "gatekeeperBindingExpansion": {
+        "propsByPackage": {}
+      },
+      "installable": true,
+      "kind": "router",
+      "mainModule": "index.js",
+      "migrations": [],
+      "modules": [
+        {
+          "name": "index.js",
+          "r2Key": "modules/f8a9aa380224df72fbbf410463e591302188ac97a14e4ee310c5591064c6eac8",
+          "sha256": "f8a9aa380224df72fbbf410463e591302188ac97a14e4ee310c5591064c6eac8",
+          "size": 44,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "vars": {}
+    },
+    "workshop-backend": {
+      "bindings": [
+        {
+          "name": "BLUEPRINTS",
+          "namespace_id": "$KV_BLUEPRINTS_ID",
+          "type": "kv_namespace"
+        },
+        {
+          "name": "AVATARS",
+          "namespace_id": "$KV_AVATARS_ID",
+          "type": "kv_namespace"
+        },
+        {
+          "bucket_name": "$R2_BLUEPRINT_CONTENT_NAME",
+          "name": "BLUEPRINT_CONTENT",
+          "type": "r2_bucket"
+        },
+        {
+          "name": "BROWSER",
+          "type": "browser"
+        },
+        {
+          "name": "LOADER",
+          "type": "worker_loader"
+        },
+        {
+          "name": "WORKERS_AI",
+          "type": "ai"
+        }
+      ],
+      "compatibilityDate": "2026-09-04",
+      "compatibilityFlags": [
+        "allow_irrevocable_stub_storage",
+        "global_fetch_strictly_public",
+        "nodejs_compat"
+      ],
+      "gatekeeperBindingExpansion": {
+        "entrypoint": "GatekeeperVendor",
+        "propsByPackage": {
+          "gatekeeper-context": {
+            "sharingDomain": "$PUBLIC_BASE_URL"
+          }
+        }
+      },
+      "installable": true,
+      "kind": "backend",
+      "mainModule": "index.js",
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "UserDurableObject",
+            "OverseerDurableObject"
+          ],
+          "tag": "v0"
+        },
+        {
+          "new_sqlite_classes": [
+            "AdminSettings"
+          ],
+          "tag": "v1"
+        },
+        {
+          "new_sqlite_classes": [
+            "PendingLogin"
+          ],
+          "tag": "v2"
+        },
+        {
+          "new_sqlite_classes": [
+            "UserDirectoryDurableObject"
+          ],
+          "tag": "v3"
+        }
+      ],
+      "modules": [
+        {
+          "name": "index.js",
+          "r2Key": "modules/63d4386b50303520d947ef3f7fae11ccc619ca175b513607d800cc110cb3080d",
+          "sha256": "63d4386b50303520d947ef3f7fae11ccc619ca175b513607d800cc110cb3080d",
+          "size": 54,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        },
+        "traces": {
+          "enabled": true,
+          "head_sampling_rate": 0.5
+        }
+      },
+      "vars": {
+        "PUBLIC_BASE_URL": "$PUBLIC_BASE_URL"
+      }
+    }
+  },
+  "wranglerVersion": "0.0.0-fixture"
+}

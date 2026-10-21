@@ -44,3 +44,18 @@ wrangler.dev.jsonc
 .dev.vars.*
 **/.dev.vars
 **/.dev.vars.*
+
+# Terraform: provider downloads and local state. Example roots commit their .terraform.lock.hcl; the
+# module's own lock file is only a test artifact. State and variable files can hold secrets.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+infra/terraform/modules/**/.terraform.lock.hcl
+# A release prepared for Terraform (verify-release.ts --materialize); the test fixtures keep theirs.
+release-out/
+
+# A saved Terraform plan holds the values it would apply, secrets included.
+*.tfplan
